@@ -74,7 +74,7 @@ final readonly class Context
     /** @param class-string $key */
     public function withValue(string $key, object $value): self
     {
-        if (!is_a($value, $key)) {
+        if (!$value instanceof $key) {
             throw new \InvalidArgumentException('Context value does not match its key');
         }
 
@@ -92,7 +92,6 @@ final readonly class Context
     public function assertActive(): void
     {
         $this->observeDeadline();
-        /** @var TerminationCause|null $cause */
         $cause = $this->state->cause();
 
         if ($cause !== null) {
@@ -110,7 +109,7 @@ final readonly class Context
     {
         $this->observeDeadline();
 
-        return $this->state->cause() !== null;
+        return $this->state->cause() instanceof \Rasuvaeff\Context\TerminationCause;
     }
 
     public function isCancelled(): bool
@@ -153,12 +152,7 @@ final readonly class Context
     /** @param class-string $key */
     public function value(string $key): ?object
     {
-        if (isset($this->values[$key])) {
-            /** @var T */
-            return $this->values[$key];
-        }
-
-        return $this->parent?->value($key);
+        return $this->values[$key] ?? $this->parent?->value($key);
     }
 
     /** @param callable(TerminationCause): void $listener */
@@ -174,7 +168,7 @@ final readonly class Context
         }
 
         $owner = $this->deadlineOwner;
-        if ($owner === null || $owner->cause() !== null) {
+        if (!$owner instanceof \Rasuvaeff\Context\Internal\ContextState || $owner->cause() instanceof \Rasuvaeff\Context\TerminationCause) {
             return;
         }
 

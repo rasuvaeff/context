@@ -21,7 +21,7 @@ final class ContextState
     {
         $this->children[] = $child;
 
-        if ($this->cause !== null) {
+        if ($this->cause instanceof \Rasuvaeff\Context\TerminationCause) {
             $child->terminate($this->cause);
         }
     }
@@ -34,7 +34,7 @@ final class ContextState
     /** @throws \Throwable */
     public function addListener(\Closure $listener): void
     {
-        if ($this->cause !== null) {
+        if ($this->cause instanceof \Rasuvaeff\Context\TerminationCause) {
             $listener($this->cause);
 
             return;
@@ -46,7 +46,7 @@ final class ContextState
     /** @throws \Throwable */
     public function terminate(TerminationCause $cause): void
     {
-        if ($this->cause !== null) {
+        if ($this->cause instanceof \Rasuvaeff\Context\TerminationCause) {
             return;
         }
 
@@ -70,12 +70,12 @@ final class ContextState
         }
 
         if ($errors !== []) {
-            throw self::aggregate($errors);
+            throw $this->aggregate($errors);
         }
     }
 
     /** @param list<\Throwable> $errors */
-    private static function aggregate(array $errors): \Throwable
+    private function aggregate(array $errors): \Throwable
     {
         if (count($errors) === 1) {
             return $errors[0];

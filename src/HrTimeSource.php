@@ -10,6 +10,6 @@ final readonly class HrTimeSource implements TimeSource
     #[\Override]
     public function nowNs(): int
     {
-        return (int) hrtime(true);
+        return (int) hrtime(as_number: true);
     }
 }
