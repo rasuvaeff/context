@@ -80,6 +80,109 @@ final class ContextTest
         Assert::true($child->isExpired());
     }
 
+    public function activeContextPredicatesAreFalse(): void
+    {
+        $context = Context::background();
+
+        Assert::false($context->isTerminated());
+        Assert::false($context->isCancelled());
+        Assert::false($context->isExpired());
+    }
+
+    public function observingExpiredContextUpdatesAllPredicates(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(1_000_000_000);
+        $clock->advanceNs(1_000_000_001);
+
+        $listenerCalled = false;
+        $context->onTerminate(static function () use (&$listenerCalled): void {
+            $listenerCalled = true;
+        });
+
+        Assert::false($context->isCancelled());
+        Assert::true($listenerCalled);
+        Assert::true($context->isTerminated());
+        Assert::true($context->isExpired());
+    }
+
+    public function expiredRemainingBudgetIsZero(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(1_000_000_000);
+        $clock->advanceNs(1_000_000_001);
+
+        Assert::same($context->remainingMs(), 0.0);
+    }
+
+    public function equalDeadlineBelongsToTheParentOwner(): void
+    {
+        $clock = new FakeTimeSource();
+        [$parent] = Context::background($clock)->withDeadline(2_000_000_000);
+        [$child] = $parent->withDeadline(2_000_000_000);
+        $clock->advanceNs(1_000_000_000);
+
+        Assert::true($child->isExpired());
+        Assert::true($parent->isExpired());
+    }
+
+    public function exactDeadlineIsExpired(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(2_000_000_000);
+        $clock->advanceNs(1_000_000_000);
+
+        Assert::true($context->isExpired());
+    }
+
+    public function expiredExceptionKeepsTheDeadlineValue(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(1_234_567_890);
+        $clock->advanceNs(1_234_567_891);
+
+        Expect::exception(ContextExpiredException::class);
+
+        try {
+            $context->assertActive();
+        } catch (ContextExpiredException $exception) {
+            Assert::same($exception->deadlineNs(), 1_234_567_890);
+            Assert::same($exception->getMessage(), 'Context deadline exceeded');
+
+            throw $exception;
+        }
+    }
+
+    public function fractionalRemainingMillisecondsAreFloored(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(3_000_000_000);
+
+        $clock->advanceNs(1_000_001_000);
+        Assert::same($context->remainingMs(), 999.0);
+
+        [$other] = Context::background($clock)->withDeadline(5_000_000_000);
+        $clock->advanceNs(2_997_999_001);
+        Assert::same($other->remainingMs(), 1.0);
+    }
+
+    public function missingRootValueIsNull(): void
+    {
+        Assert::same(Context::background()->value(RequestId::class), null);
+    }
+
+    public function earlierChildDeadlineDoesNotTerminateParent(): void
+    {
+        $clock = new FakeTimeSource();
+        [$parent] = Context::background($clock)->withDeadline(3_000_000_000);
+        [$child] = $parent->withDeadline(2_000_000_000);
+
+        $clock->advanceNs(1_000_000_001);
+
+        Assert::true($child->isExpired());
+        Assert::false($parent->isTerminated());
+    }
+
     public function cancellationReasonIsPrevious(): void
     {
         [$context, $controller] = Context::background()->withCancel();

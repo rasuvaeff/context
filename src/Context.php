@@ -100,7 +100,12 @@ final readonly class Context
             }
 
             if ($cause->isExpired()) {
-                throw new ContextExpiredException($cause->deadlineNs() ?? 0);
+                $deadlineNs = $cause->deadlineNs();
+                if ($deadlineNs === null) {
+                    throw new \LogicException('Expired context has no deadline');
+                }
+
+                throw new ContextExpiredException($deadlineNs);
             }
         }
     }
