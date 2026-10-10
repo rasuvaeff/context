@@ -1,0 +1,37 @@
+# context
+
+Install:
+
+```
+composer require rasuvaeff/context
+```
+
+## Rules
+
+- PHP 8.3+, `declare(strict_types=1)`
+- Immutable by default (`final readonly class`)
+- <!-- Add package-specific rules here -->
+
+## API
+
+<!-- For each public class, provide a self-contained example.
+The goal: an LLM can use the package correctly from this file alone. -->
+
+```php
+use Rasuvaeff\Context\Context;
+
+[$ctx, $controller] = Context::background()->withTimeout(2.0);
+$ctx->assertActive();
+$controller->cancel();
+```
+
+`withCancel()`, `withTimeout(float $seconds)` and `withDeadline(int $ns)`
+return `[Context, ContextController]`. `withValue(class-string<T>, T)` returns
+only a child `Context` and requires an object matching the key. `isCancelled()`
+means explicit cancellation; `isExpired()` means deadline; `isTerminated()` is
+their union. `remainingMs()` returns `null` without a deadline and at least
+`1.0` for a still-active sub-millisecond budget.
+
+Queue recipe: derive one context per message using its TTR, call
+`assertActive()` before every step, ACK only after completion, and NACK or
+dead-letter on `ContextExpiredException`. The core does not depend on a queue.
