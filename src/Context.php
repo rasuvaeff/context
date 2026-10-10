@@ -94,7 +94,7 @@ final readonly class Context
         $this->observeDeadline();
         $cause = $this->state->cause();
 
-        if ($cause !== null) {
+        if ($cause instanceof TerminationCause) {
             if ($cause->isCancelled()) {
                 throw new ContextCancelledException($cause->reason());
             }
