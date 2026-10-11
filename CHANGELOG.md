@@ -7,10 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.2.0 — 2026-10-11
 
-- **BC:** `Context::onTerminate()` returns an unsubscribe closure
+- `Context::onTerminate()` returns an unsubscribe closure
   (`\Closure(): void`) instead of `void`; calling it removes the listener,
-  and it is a no-op once the listener ran. Callers that ignore the return
-  value are unaffected (#1).
+  and it is a no-op once the listener ran. Source-compatible: callers that
+  ignore the return value are unaffected (#1).
 - A terminated context state detaches from its parent and releases its
   listeners and children, so a long-lived parent no longer accumulates every
   cancelled or expired child it derived. `withValue()` now shares its
