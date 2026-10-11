@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context;
 
-/** @api */
+/**
+ * @api
+ */
 final class ContextCancelledException extends ContextException
 {
     public function __construct(?\Throwable $reason = null)

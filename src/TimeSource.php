@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context;
 
-/** @api */
+/**
+ * @api
+ */
 interface TimeSource
 {
     /** Returns monotonic time in nanoseconds. */

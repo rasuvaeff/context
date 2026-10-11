@@ -4,5 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context;
 
-/** @api */
+/**
+ * @api
+ */
 class ContextException extends \RuntimeException {}

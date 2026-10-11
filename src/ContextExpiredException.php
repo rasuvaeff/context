@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context;
 
-/** @api */
+/**
+ * @api
+ */
 final class ContextExpiredException extends ContextException
 {
-    public function __construct(private readonly int $deadlineNs)
+    public function __construct(private readonly int $deadlineNs, ?\Throwable $previous = null)
     {
-        parent::__construct('Context deadline exceeded');
+        parent::__construct('Context deadline exceeded', previous: $previous);
     }
 
     public function deadlineNs(): int

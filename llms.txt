@@ -8,30 +8,59 @@ composer require rasuvaeff/context
 
 ## Rules
 
-- PHP 8.3+, `declare(strict_types=1)`
-- Immutable by default (`final readonly class`)
-- <!-- Add package-specific rules here -->
+- PHP 8.3+, `declare(strict_types=1)`, no runtime dependencies.
+- `Context` is an immutable read-only view; the owner of a branch keeps the
+  `ContextController` and cancels it in `finally`.
+- Cancellation is cooperative: call `assertActive()` between steps; nothing
+  interrupts a blocking call. Map `remainingMs()` to transport timeouts.
+- Deadlines are monotonic `hrtime()` nanoseconds, observed lazily; observing a
+  child whose deadline is owned by an ancestor terminates the ancestor's whole
+  subtree. A child deadline is never later than the parent's.
+- `withTimeout()`: zero/negative → immediate deadline; oversized → saturates
+  at `PHP_INT_MAX`. NaN/INF → `InvalidArgumentException`.
+- `onTerminate()` returns an unsubscribe `\Closure(): void`; a terminated
+  context detaches from its parent and drops its listeners.
+- `withValue(class-string<T>, T)` shares the parent's state (no controller);
+  lookup returns the nearest ancestor's value or null.
+- Deadlines do not cross processes: send `(int) remainingMs()`, rebuild with
+  `withTimeout($ms / 1000)` (capped by your own limit) on the receiver.
 
 ## API
 
-<!-- For each public class, provide a self-contained example.
-The goal: an LLM can use the package correctly from this file alone. -->
-
 ```php
 use Rasuvaeff\Context\Context;
+use Rasuvaeff\Context\ContextCancelledException;
+use Rasuvaeff\Context\ContextExpiredException;
+use Rasuvaeff\Context\TerminationCause;
 
-[$ctx, $controller] = Context::background()->withTimeout(2.0);
-$ctx->assertActive();
-$controller->cancel();
+$root = Context::background(?TimeSource $timeSource = null);
+
+[$ctx, $controller] = $root->withTimeout(2.0);       // [Context, ContextController]
+[$child, $childController] = $ctx->withCancel();
+[$capped, $c] = $ctx->withDeadline(int $absoluteNs);
+$traced = $ctx->withValue(RequestId::class, new RequestId('r-1'));   // Context only
+$traced->value(RequestId::class);                   // ?RequestId
+
+$ctx->assertActive();      // ContextCancelledException (reason = previous) | ContextExpiredException
+$ctx->isTerminated();      // isCancelled() || isExpired()
+$ctx->remainingMs();       // ?float: null = no deadline, >= 1.0 active, 0.0 expired
+$ctx->deadlineNs();        // ?int
+
+$unsubscribe = $ctx->onTerminate(static fn (TerminationCause $c): null => null);
+$unsubscribe();            // idempotent; no-op once the listener ran
+
+$controller->cancel(?\Throwable $reason = null);
+
+new ContextExpiredException(int $deadlineNs, ?\Throwable $previous = null);
 ```
 
-`withCancel()`, `withTimeout(float $seconds)` and `withDeadline(int $ns)`
-return `[Context, ContextController]`. `withValue(class-string<T>, T)` returns
-only a child `Context` and requires an object matching the key. `isCancelled()`
-means explicit cancellation; `isExpired()` means deadline; `isTerminated()` is
-their union. `remainingMs()` returns `null` without a deadline and at least
-`1.0` for a still-active sub-millisecond budget.
+Listener failures do not stop the cascade: every listener and child runs, then
+one exception (or a `RuntimeException` chain for several) is rethrown from
+`cancel()` / the observing call.
 
-Queue recipe: derive one context per message using its TTR, call
-`assertActive()` before every step, ACK only after completion, and NACK or
-dead-letter on `ContextExpiredException`. The core does not depend on a queue.
+Queue recipe: one context per message with the TTR as timeout, `assertActive()`
+before every step, ACK only after completion, NACK/dead-letter on
+`ContextExpiredException`, cancel the controller in `finally`.
+
+Testing: implement `TimeSource::nowNs(): int` with a mutable counter and pass it
+to `Context::background($clock)`.

@@ -6,7 +6,9 @@ namespace Rasuvaeff\Context;
 
 use Rasuvaeff\Context\Internal\ContextState;
 
-/** @api */
+/**
+ * @api
+ */
 final readonly class Context
 {
     private function __construct(
@@ -18,7 +20,12 @@ final readonly class Context
         /** @var array<class-string, object> */
         private array $values,
     ) {
-        $parent?->state->addChild($state);
+        // A value-only derivation shares its parent's state: it has no
+        // controller of its own, so it terminates exactly when the parent
+        // does, and the parent does not retain one child per withValue().
+        if ($parent instanceof self && $parent->state !== $state) {
+            $parent->state->addChild($state);
+        }
     }
 
     public static function background(?TimeSource $timeSource = null): self
@@ -42,15 +49,23 @@ final readonly class Context
         return [$context, new ContextController($state)];
     }
 
-    /** @return array{self, ContextController} */
+    /**
+     * A zero or negative timeout yields an already-expired context; a
+     * timeout beyond the representable range saturates at `PHP_INT_MAX`
+     * nanoseconds instead of overflowing into an immediate deadline.
+     *
+     * @return array{self, ContextController}
+     */
     public function withTimeout(float $seconds): array
     {
         if (!is_finite($seconds)) {
             throw new \InvalidArgumentException('Timeout must be finite');
         }
 
-        $durationNs = (int) ($seconds * 1_000_000_000.0);
-        $deadline = $this->timeSource->nowNs() + $durationNs;
+        $nowNs = $this->timeSource->nowNs();
+        $durationNs = max(0.0, $seconds) * 1_000_000_000.0;
+        $roomNs = \PHP_INT_MAX - $nowNs;
+        $deadline = $durationNs >= (float) $roomNs ? \PHP_INT_MAX : $nowNs + (int) $durationNs;
 
         return $this->withDeadline($deadline);
     }
@@ -82,7 +97,7 @@ final readonly class Context
         $values[$key] = $value;
 
         return $this->derive(
-            state: new ContextState(),
+            state: $this->state,
             deadlineNs: $this->deadlineNs,
             deadlineOwner: $this->deadlineOwner,
             values: $values,
@@ -160,10 +175,19 @@ final readonly class Context
         return $this->values[$key] ?? $this->parent?->value($key);
     }
 
-    /** @param callable(TerminationCause): void $listener */
-    public function onTerminate(callable $listener): void
+    /**
+     * Runs `$listener` once when this context terminates (immediately if it
+     * already has). The returned closure unregisters it — call it when the
+     * guarded resource is released before the context ends, so a
+     * long-lived context does not keep every listener alive.
+     *
+     * @param callable(TerminationCause): void $listener
+     *
+     * @return \Closure(): void
+     */
+    public function onTerminate(callable $listener): \Closure
     {
-        $this->state->addListener(\Closure::fromCallable($listener));
+        return $this->state->addListener(\Closure::fromCallable($listener));
     }
 
     private function observeDeadline(): void

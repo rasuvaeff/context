@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context;
 
-/** @api */
+/**
+ * @api
+ */
 final readonly class HrTimeSource implements TimeSource
 {
     #[\Override]
