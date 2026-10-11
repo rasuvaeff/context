@@ -6,7 +6,9 @@ namespace Rasuvaeff\Context;
 
 use Rasuvaeff\Context\Internal\ContextState;
 
-/** @api */
+/**
+ * @api
+ */
 final readonly class ContextController
 {
     public function __construct(private ContextState $state) {}

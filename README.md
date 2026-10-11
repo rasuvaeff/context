@@ -15,9 +15,7 @@ Deadline, cancellation and request-scoped values for PHP
 ## Requirements
 
 - PHP 8.3+
-<!-- Add runtime dependencies here, e.g.:
-- `yiisoft/db` ^2.0
--->
+- No runtime dependencies
 
 ## Installation
 
@@ -27,27 +25,69 @@ composer require rasuvaeff/context
 
 ## Usage
 
-<!-- Add usage examples here. For each public class, show:
-- How to create/construct
-- Key methods with examples
-- Table of public API
--->
+A `Context` is an immutable, read-only view passed down the call graph: a
+deadline, a cancellation signal and request-scoped values. The owner of a
+cancellable branch keeps the matching `ContextController`. Cancellation is
+cooperative: code checks the context between steps; nothing is interrupted
+mid-call.
+
+### Create and derive
 
 ```php
 use Rasuvaeff\Context\Context;
 
-[$context, $controller] = Context::background()->withTimeout(3.0);
-$context->assertActive();
-$context->onTerminate(static function (): void {
-    // release a resource owned by this operation
-});
-$controller->cancel();
+$root = Context::background();                       // never terminates by itself
+
+[$request, $requestController] = $root->withTimeout(3.0);   // seconds
+[$step, $stepController] = $request->withCancel();          // cancellable branch
+[$capped] = $request->withDeadline($absoluteNs);            // monotonic hrtime() ns
+
+$traced = $request->withValue(RequestId::class, new RequestId('r-42'));
+$traced->value(RequestId::class)?->value;                    // 'r-42' (nearest ancestor wins)
 ```
 
-For queue workers, create a context for each message and use the job's TTR as
-the deadline. Check it between external calls and acknowledge only when the
-job completes; an expired context should be retried or dead-lettered according
-to the queue's policy:
+A child deadline is never later than its parent's: `withTimeout()` and
+`withDeadline()` take the earlier of the two. A zero or negative timeout is
+an immediate deadline; an oversized one saturates at `PHP_INT_MAX` instead of
+overflowing.
+
+### Check
+
+```php
+$request->assertActive();        // throws ContextCancelledException / ContextExpiredException
+$request->isTerminated();        // cancelled or expired
+$request->isCancelled();         // explicit cancellation
+$request->isExpired();           // deadline passed
+$request->remainingMs();         // null without a deadline; >= 1.0 while active, 0.0 once expired
+```
+
+Deadlines use monotonic `hrtime()` and are observed lazily: the next
+`assertActive()`, `remainingMs()`, `isTerminated()` or `isExpired()` call
+discovers an expired deadline. If the deadline belongs to an ancestor, the
+ancestor and its whole subtree are terminated. A controller cancellation
+propagates to every descendant immediately.
+
+### Cancel and clean up
+
+```php
+$unsubscribe = $request->onTerminate(static function (TerminationCause $cause): void {
+    // release a resource owned by this operation
+});
+
+$unsubscribe();                  // the resource was released early: drop the listener
+$requestController->cancel($reason);   // $reason becomes the exception's previous
+```
+
+`onTerminate()` runs the listener once when the context terminates
+(immediately if it already has) and returns a closure that unregisters it.
+A terminated context detaches from its parent and releases its listeners, so
+a long-lived parent does not accumulate per-request children. Always cancel
+the controller you own in `finally`.
+
+### Queue workers
+
+Create a context per message with the job's TTR as the deadline, check it
+between external calls and acknowledge only when the job completes:
 
 ```php
 [$jobContext, $jobController] = Context::background()->withTimeout($ttrSeconds);
@@ -64,36 +104,54 @@ try {
 }
 ```
 
-Deadlines use monotonic `hrtime()`. The core discovers an expired deadline on
-the next `assertActive()`, `remainingMs()`, `isTerminated()` or `isExpired()`
-call. If that deadline belongs to an ancestor, the ancestor and all its
-descendants are terminated. A controller cancellation propagates immediately.
+### Crossing a process boundary
+
+Deadlines are monotonic nanoseconds of the current process and mean nothing
+elsewhere. Send the remaining budget and rebuild it on the other side:
+
+```php
+// sender: an HTTP header or a queue message attribute
+$headers['X-Request-Timeout-Ms'] = (string) (int) $context->remainingMs();
+
+// receiver: never longer than its own limit
+[$context] = Context::background()->withTimeout(min($limitSeconds, $headerMs / 1000));
+```
+
+Validate the incoming value (an integer in a bounded range) before trusting
+it. `rasuvaeff/context-http` implements this for PSR-15/PSR-18.
+
+### Testing
+
+Inject a `TimeSource` to drive deadlines deterministically:
+
+```php
+$clock = new FakeTimeSource();               // your TimeSource returning nowNs()
+[$context] = Context::background($clock)->withTimeout(1.0);
+$clock->advanceNs(2_000_000_000);
+$context->isExpired();                        // true
+```
 
 ### Public API
 
 | Class | Description |
 |---|---|
-| `Context` | Immutable view with derivation, values, deadline and checks |
-| `ContextController` | Owner handle for explicit cancellation |
-| `TimeSource` | Monotonic clock seam for deterministic tests |
+| `Context` | Immutable view: `background()`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `remainingMs()`, `deadlineNs()`, `onTerminate()` |
+| `ContextController` | Owner handle: `cancel(?Throwable $reason = null)` |
+| `TimeSource` | Monotonic clock seam (`nowNs(): int`) for deterministic tests |
 | `HrTimeSource` | Production `hrtime()` implementation |
 | `TerminationCause` | Cancellation or deadline cause passed to listeners |
-| `ContextException` | Base context exception |
-| `ContextCancelledException` | Explicit cancellation detected by `assertActive()` |
-| `ContextExpiredException` | Deadline expiration detected by `assertActive()` |
+| `ContextException` | Base context exception (`RuntimeException`) |
+| `ContextCancelledException` | Explicit cancellation detected by `assertActive()`; the reason is `previous` |
+| `ContextExpiredException` | Deadline expiration detected by `assertActive()`; `deadlineNs()`, optional `previous` |
 
 ## Security
 
-<!-- Describe what is safe and what requires caution.
-For SQL/query packages:
-- User values are bound as parameters (safe)
-- Identifiers (table/column names) must be trusted/hard-coded
-- Raw SQL only in trusted context
--->
-
-Context values are request-scoped metadata, not a service locator. The package
-does not interrupt a blocking syscall; transport adapters must map the
-remaining budget or register an `onTerminate()` cleanup listener.
+Context values are request-scoped metadata, not a service locator; keys are
+class strings and a value must be an instance of its key. The package never
+interrupts a blocking syscall: transport adapters must map the remaining
+budget to their own timeouts or register an `onTerminate()` cleanup
+listener. A budget received from another process is untrusted input —
+validate and cap it before building a context from it.
 
 ## Examples
 
