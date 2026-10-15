@@ -62,5 +62,36 @@ Queue recipe: one context per message with the TTR as timeout, `assertActive()`
 before every step, ACK only after completion, NACK/dead-letter on
 `ContextExpiredException`, cancel the controller in `finally`.
 
-Testing: implement `TimeSource::nowNs(): int` with a mutable counter and pass it
-to `Context::background($clock)`.
+Testing: `Rasuvaeff\Context\Testing\FakeTimeSource` (`advanceNs()`,
+`advanceMs()`; also the `Sleeper`, so `sleep()` advances it) and
+`SteppingTimeSource($stepNs)` (moves on every read — race tests). Pass to
+`Context::background($clock)`.
+
+## 0.3.0 additions
+
+```php
+[$work, $c] = $ctx->withReserve(0.2);      // parent deadline − 200 ms; no parent deadline → withCancel()
+$cleanup = $ctx->withoutCancel();          // values only: no deadline, not cancelled by the parent
+[$job, $c] = $message->joinedWith($worker);// terminated when either is; earlier deadline; values from $message
+                                           // same TimeSource required (two default clocks are fine)
+$ctx->sleep(0.5);                          // min(0.5 s, remaining); throws Expired/Cancelled
+foreach ($ctx->iterate($items, every: 1) as $k => $v) {}   // checks before pulling each element
+$controller->requestCancel($reason);       // signal-safe: applied at the next check of the subtree
+```
+
+- Never call `cancel()` from a signal handler; use `requestCancel()`.
+- A check costs ~0.2 µs; requested cancellations are applied ancestors-first.
+- Adapters: read `remainingMs()` BEFORE `assertActive()` — after it, an expiry
+  in between yields `0.0`, which curl/ClickHouse/MySQL read as "no timeout".
+
+```php
+final readonly class TenantId implements WireValue {
+    public function toWire(): string;                     // what travels
+    public static function fromWire(string $w): static;   // validate, throw on bad input
+}
+$codec = new WireCodec(['tenant' => TenantId::class], onInvalid: null);
+$wire = $codec->encode($ctx);       // ['budget_ms' => int|null, 'values' => ['tenant' => '...']]; throws if terminated
+[$ctx, $c] = $codec->decode($wire, Context::background(), maxBudgetMs: 30_000);
+// decode never throws on input: missing/bad budget → maxBudgetMs (never unlimited),
+// unknown alias / failing fromWire() dropped
+```
