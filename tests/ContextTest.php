@@ -10,10 +10,12 @@ use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Tests\Support\FakeTimeSource;
 use Rasuvaeff\Context\Tests\Support\RequestId;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Test;
 
@@ -216,10 +218,18 @@ final class ContextTest
         Assert::same($child->value(RequestId::class)?->value, 'child');
     }
 
-    public function invalidTimeoutsAreRejected(): void
+    #[DataProvider('invalidTimeoutProvider')]
+    public function invalidTimeoutsAreRejected(float $seconds): void
     {
         Expect::exception(\InvalidArgumentException::class);
-        Context::background()->withTimeout(INF);
+        Context::background()->withTimeout($seconds);
+    }
+
+    public static function invalidTimeoutProvider(): iterable
+    {
+        yield 'positive infinity' => [INF];
+        yield 'negative infinity' => [-INF];
+        yield 'not a number' => [NAN];
     }
 
     public function equalChildDeadlineKeepsAncestorAsOwner(): void
@@ -252,10 +262,13 @@ final class ContextTest
         });
 
         Expect::exception(\RuntimeException::class);
-        $controller->cancel();
 
-        Assert::true($childCalled);
-        Assert::true($child->isCancelled());
+        try {
+            $controller->cancel();
+        } finally {
+            Assert::true($childCalled);
+            Assert::true($child->isCancelled());
+        }
     }
 
     #[Property(runs: 200)]
@@ -296,5 +309,191 @@ final class ContextTest
             'parentMs' => Gen::intBetween(1, 2_000),
             'childMs' => Gen::intBetween(1, 2_000),
         ];
+    }
+
+    /**
+     * @param non-empty-list<array{int, int}> $nodes [parent pick, own deadline in ms or 0 for none]
+     */
+    #[Property(runs: 300)]
+    public function observingANodeTerminatesExactlyTheSubtreeOwningItsDeadline(
+        array $nodes,
+        int $advanceMs,
+        int $observePick,
+    ): void {
+        $clock = new FakeTimeSource();
+        $startNs = $clock->nowNs();
+        $contexts = [];
+        $parents = [];
+        $effectiveMs = [];
+        $owners = [];
+        $terminated = [];
+
+        foreach ($nodes as $i => [$pick, $deadlineMs]) {
+            $parent = $i === 0 ? -1 : $pick % $i;
+            $base = $parent === -1 ? Context::background($clock) : $contexts[$parent];
+            $inheritedMs = $effectiveMs[$parent] ?? null;
+            $inheritedOwner = $owners[$parent] ?? null;
+
+            if ($deadlineMs === 0) {
+                [$context] = $base->withCancel();
+                $effectiveMs[$i] = $inheritedMs;
+                $owners[$i] = $inheritedOwner;
+            } else {
+                [$context] = $base->withDeadline($startNs + $deadlineMs * 1_000_000);
+                $ownsDeadline = $inheritedMs === null || $deadlineMs < $inheritedMs;
+                $effectiveMs[$i] = $ownsDeadline ? $deadlineMs : $inheritedMs;
+                $owners[$i] = $ownsDeadline ? $i : $inheritedOwner;
+            }
+
+            $context->onTerminate(static function () use (&$terminated, $i): void {
+                $terminated[] = $i;
+            });
+            $contexts[] = $context;
+            $parents[] = $parent;
+        }
+
+        $observed = $observePick % \count($contexts);
+        $clock->advanceNs($advanceMs * 1_000_000);
+        $contexts[$observed]->isTerminated();
+
+        $deadline = $effectiveMs[$observed];
+        $owner = $owners[$observed];
+        $expected = $deadline !== null && $owner !== null && $advanceMs >= $deadline
+            ? $this->subtree($parents, $owner)
+            : [];
+        sort($terminated);
+
+        Assert::same($terminated, $expected);
+
+        Classify::cover($expected !== [] && $owner === $observed, 'own deadline expired', 10);
+        Classify::cover($expected !== [] && $owner !== $observed, 'an ancestor deadline expired', 10);
+        Classify::cover($expected === [], 'nothing expired', 20);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function observingANodeTerminatesExactlyTheSubtreeOwningItsDeadlineGenerators(): array
+    {
+        return [
+            'nodes' => Gen::nonEmptyArrayOf(
+                Gen::tuple(
+                    Gen::intBetween(0, 1_000),
+                    Gen::frequency([[1, Gen::constant(value: 0)], [2, Gen::intBetween(1, 100)]]),
+                ),
+                10,
+            ),
+            'advanceMs' => Gen::intBetween(0, 120),
+            'observePick' => Gen::intBetween(0, 1_000),
+        ];
+    }
+
+    /** @return iterable<string, array{non-empty-list<array{int, int}>, int, int}> */
+    public static function observingANodeTerminatesExactlyTheSubtreeOwningItsDeadlineExamples(): iterable
+    {
+        yield 'own deadline leaves the parent active' => [[[0, 0], [0, 10]], 10, 1];
+        yield 'an ancestor deadline reaches a sibling' => [[[0, 10], [0, 0], [0, 0]], 20, 2];
+        yield 'an equal deadline belongs to the ancestor' => [[[0, 10], [0, 10]], 10, 1];
+        yield 'one millisecond before the deadline' => [[[0, 10]], 9, 0];
+    }
+
+    /**
+     * @param non-empty-list<array{int, bool}> $nodes [parent pick, has a throwing listener]
+     */
+    #[Property(runs: 300)]
+    public function aThrowingListenerNeverStopsTheCascade(array $nodes, int $cancelPick): void
+    {
+        [$root] = Context::background()->withCancel();
+        $contexts = [];
+        $controllers = [];
+        $parents = [];
+        $notified = [];
+        $throwing = [];
+
+        foreach ($nodes as $i => [$pick, $throws]) {
+            $parent = $i === 0 ? -1 : $pick % $i;
+            [$context, $controller] = ($parent === -1 ? $root : $contexts[$parent])->withCancel();
+
+            if ($throws) {
+                // Registered first, so the recording listener after it proves isolation.
+                $context->onTerminate(static function () use ($i): void {
+                    throw new \RuntimeException('listener ' . $i);
+                });
+                $throwing[] = $i;
+            }
+            $context->onTerminate(static function () use (&$notified, $i): void {
+                $notified[] = $i;
+            });
+            $contexts[] = $context;
+            $controllers[] = $controller;
+            $parents[] = $parent;
+        }
+
+        $target = $cancelPick % \count($contexts);
+        $subtree = $this->subtree($parents, $target);
+        $failing = array_values(array_intersect($throwing, $subtree));
+        $error = null;
+
+        try {
+            $controllers[$target]->cancel();
+        } catch (\RuntimeException $caught) {
+            $error = $caught;
+        }
+        sort($notified);
+
+        Assert::same($notified, $subtree);
+        foreach ($contexts as $i => $context) {
+            Assert::same($context->isCancelled(), \in_array($i, $subtree, strict: true));
+        }
+        Assert::same($error instanceof \RuntimeException, $failing !== []);
+        if (\count($failing) === 1) {
+            Assert::same($error?->getMessage(), 'listener ' . $failing[0]);
+        }
+
+        Classify::cover(\count($failing) > 1, 'several listeners failed', 5);
+        Classify::cover(\count($failing) === 1, 'one listener failed', 10);
+        Classify::cover($failing === [], 'no listener failed', 20);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function aThrowingListenerNeverStopsTheCascadeGenerators(): array
+    {
+        return [
+            'nodes' => Gen::nonEmptyArrayOf(
+                Gen::tuple(
+                    Gen::intBetween(0, 1_000),
+                    Gen::frequency([[3, Gen::constant(value: false)], [1, Gen::constant(value: true)]]),
+                ),
+                10,
+            ),
+            'cancelPick' => Gen::intBetween(0, 1_000),
+        ];
+    }
+
+    /** @return iterable<string, array{non-empty-list<array{int, bool}>, int}> */
+    public static function aThrowingListenerNeverStopsTheCascadeExamples(): iterable
+    {
+        yield 'two failing listeners on the cancelled node' => [[[0, true], [0, true], [1, false]], 0];
+        yield 'a failing child does not stop its sibling' => [[[0, false], [0, true], [0, false]], 0];
+        yield 'a failure outside the subtree is not raised' => [[[0, false], [0, true], [0, false]], 2];
+    }
+
+    /**
+     * @param list<int> $parents
+     *
+     * @return list<int>
+     */
+    private function subtree(array $parents, int $root): array
+    {
+        $nodes = [];
+        foreach (array_keys($parents) as $node) {
+            $ancestor = $node;
+            while ($ancestor !== -1 && $ancestor !== $root) {
+                $ancestor = $parents[$ancestor];
+            }
+            if ($ancestor === $root) {
+                $nodes[] = $node;
+            }
+        }
+
+        return $nodes;
     }
 }

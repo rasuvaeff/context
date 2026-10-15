@@ -23,6 +23,34 @@ Deadline, cancellation and request-scoped values for PHP
 composer require rasuvaeff/context
 ```
 
+## Limitations
+
+The context **stops work; it does not interrupt it.** It guarantees two
+things: code that checks the context does not *start* a step after the budget
+is gone, and a caller does not *wait* past the budget when the transport maps
+`remainingMs()` to its own timeout. Aborting a call that is already in flight
+is possible only where the transport supports it:
+
+| Transport | Budget → timeout | Abort an in-flight call |
+|---|---|---|
+| Retries, pipelines, batches, your own loops | — | Yes: `assertActive()` between steps and attempts |
+| Queue consumers | Message TTR → `withTimeout()` | Yes, in your own loop |
+| HTTP via Guzzle | Per-request `timeout` = remaining budget ([`rasuvaeff/context-http`](https://github.com/rasuvaeff/context-http)) | No for a synchronous call — it returns at its own timeout |
+| HTTP via a generic PSR-18 client | No: PSR-18 has no per-request options — configure the client | No |
+| ClickHouse over HTTP | `max_execution_time` ([`rasuvaeff/clickhouse-toolkit`](https://github.com/rasuvaeff/clickhouse-toolkit)) | The server enforces `max_execution_time` |
+| MySQL / PostgreSQL via PDO | No: PDO has no per-query timeout (connect only) | Only out of band (`KILL QUERY`, `pg_cancel_backend()`) — not provided |
+| Redis | Only by lowering the client's read timeout | No for blocking commands (`BLPOP`) |
+
+Deadlines are **lazy**: there is no background timer. An expired deadline is
+discovered by the next `assertActive()`, `remainingMs()`, `isTerminated()` or
+`isExpired()`; if nothing observes the context, its `onTerminate()` listeners
+never run. Check before every step, not once at the top.
+
+`cancel()` runs listeners synchronously in the code that calls it. A
+single-threaded PHP request blocked inside a call cannot cancel itself at the
+same time, so a listener helps only once control returns — after a transport
+timeout, between steps, or under a fiber/event loop.
+
 ## Usage
 
 A `Context` is an immutable, read-only view passed down the call graph: a
