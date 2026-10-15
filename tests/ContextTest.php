@@ -7,7 +7,7 @@ namespace Rasuvaeff\Context\Tests;
 use Rasuvaeff\Context\Context;
 use Rasuvaeff\Context\ContextCancelledException;
 use Rasuvaeff\Context\ContextExpiredException;
-use Rasuvaeff\Context\Tests\Support\FakeTimeSource;
+use Rasuvaeff\Context\Testing\FakeTimeSource;
 use Rasuvaeff\Context\Tests\Support\RequestId;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Classify;

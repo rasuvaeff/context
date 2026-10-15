@@ -16,6 +16,7 @@ their descendants.
 2. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 3. **Deadlines are monotonic.** All deadline checks use `TimeSource`; never
    replace it with wall-clock time or a sleep-based timer in the core.
+   `Context::sleep()` only waits through `Sleeper` and re-checks `TimeSource`.
 4. **Preserve the public contract.** Update README + tests with any API change.
 
 ## Commands
@@ -64,6 +65,20 @@ make release-check
 - **`withTimeout()` saturates**: a non-positive timeout is an immediate
   deadline (`now`), an oversized one is `PHP_INT_MAX`; never compute
   `now + (int) ($seconds * 1e9)` unguarded (float → int overflow is undefined).
+- **States form a DAG**: `joinedWith()` gives a state two parents. A
+  terminated state detaches from **every** parent, and `addChild()` ignores a
+  child that is already terminated — otherwise a long-lived worker context
+  retains every joined per-message node.
+- **`requestCancel()` runs nothing.** It records a pending cause; every check
+  walks the ancestors (with a visited set, joins share ancestors) and applies
+  the topmost request. A process-wide pending counter skips the walk while it
+  is zero — keep it balanced (increment on record, decrement when the pending
+  cause is consumed), or every check pays the walk.
+- **`withoutCancel()` has no state link and no parent link**: values are
+  copied, so a cleanup context keeps nothing of the request tree alive.
+- **Seconds → nanoseconds uses `round()`, never a bare `(int)`**: `1.015 * 1e9`
+  is `1014999999.99…`; truncation once made `remainingMs()` report 1014 right
+  after `withTimeout(1.015)`.
 - Deadlines are monotonic nanoseconds and meaningless in another process: to
   cross a boundary, send `remainingMs()` and rebuild with
   `withTimeout($ms / 1000)` on the other side.

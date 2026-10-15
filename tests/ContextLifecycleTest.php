@@ -11,7 +11,7 @@ use Rasuvaeff\Context\ContextException;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Internal\ContextState;
 use Rasuvaeff\Context\TerminationCause;
-use Rasuvaeff\Context\Tests\Support\FakeTimeSource;
+use Rasuvaeff\Context\Testing\FakeTimeSource;
 use Rasuvaeff\Context\Tests\Support\RequestId;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Classify;
@@ -154,6 +154,15 @@ final class ContextLifecycleTest
         [$context] = Context::background(new FakeTimeSource(1_000_000_000))->withTimeout(1.5);
 
         Assert::same($context->deadlineNs(), 2_500_000_000);
+    }
+
+    public function aFractionalTimeoutIsNotTruncated(): void
+    {
+        // 1.015 * 1e9 is 1014999999.99… in floating point.
+        [$context] = Context::background(new FakeTimeSource())->withTimeout(1.015);
+
+        Assert::same($context->deadlineNs(), 2_015_000_000);
+        Assert::same($context->remainingMs(), 1_015.0);
     }
 
     #[DataProvider('nonPositiveTimeoutProvider')]

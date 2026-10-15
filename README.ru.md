@@ -49,7 +49,9 @@ composer require rasuvaeff/context
 `cancel()` запускает listener'ы синхронно, в вызывающем коде.
 Однопоточный PHP-запрос, заблокированный внутри вызова, не может одновременно
 отменить сам себя, поэтому listener полезен только после возврата управления —
-по таймауту транспорта, между шагами или под fiber/event loop.
+по таймауту транспорта, между шагами или под fiber/event loop. Из обработчика
+сигнала используйте `requestCancel()`: он ничего не исполняет до следующей
+проверки.
 
 ## Использование
 
@@ -72,12 +74,30 @@ $root = Context::background();                       // сам по себе н�
 
 $traced = $request->withValue(RequestId::class, new RequestId('r-42'));
 $traced->value(RequestId::class)?->value;                    // 'r-42' (выигрывает ближайший предок)
+
+[$work] = $request->withReserve(0.2);                        // дедлайн родителя минус 200 мс
+$cleanup = $request->withoutCancel();                        // только значения: переживает запрос
+[$job, $jobController] = $message->joinedWith($worker);      // завершается вместе с любым из двух
 ```
 
 Дедлайн потомка никогда не позже родительского: `withTimeout()` и
 `withDeadline()` берут более ранний из двух. Нулевой или отрицательный таймаут
 даёт немедленный дедлайн; слишком большой насыщается до `PHP_INT_MAX`, а не
 переполняется.
+
+- **`withReserve($seconds)`** оставляет время на действия после возврата
+  нижних слоёв — ответить 504, сделать NACK сообщению, сохранить прогресс. Без
+  дедлайна у родителя это `withCancel()`; резерв, покрывающий весь бюджет,
+  даёт уже истёкший контекст.
+- **`withoutCancel()`** сохраняет значения, но отбрасывает дедлайн и отмену:
+  для аудита, компенсаций и логирования ошибок в `finally` после окончания
+  запроса. Бюджета у него нет — ограничьте его:
+  `[$cleanup] = $request->withoutCancel()->withTimeout(2.0)`.
+- **`joinedWith($other)`** подчиняется двум независимым источникам:
+  shutdown-контексту воркера и контексту сообщения, пришедшему извне.
+  Выигрывает первая причина, дедлайн — более ранний, значения берутся только
+  из `$this`. Если оба из одного дерева — деривируйте:
+  `$worker->withTimeout($ttr)` уже подчиняется обоим.
 
 ### Проверки
 
@@ -93,7 +113,22 @@ $request->remainingMs();         // null без дедлайна; >= 1.0 пок�
 истёкший дедлайн замечает следующий вызов `assertActive()`, `remainingMs()`,
 `isTerminated()` или `isExpired()`. Если дедлайн принадлежит предку,
 завершаются предок и всё его поддерево. Отмена через контроллер сразу
-распространяется на всех потомков.
+распространяется на всех потомков. Одна проверка стоит около 0,2 мкс.
+
+```php
+$request->sleep(0.5);            // не дольше дедлайна: бросает, если он наступил раньше
+
+foreach ($request->iterate($rows) as $key => $row) {
+    process($row);               // проверка перед взятием каждого элемента
+}
+```
+
+`sleep()` бросает `ContextExpiredException`, если дедлайн наступил раньше
+конца сна, и `ContextCancelledException`, если за это время обработчик
+сигнала запросил отмену. `iterate()` сохраняет ключи и проверяет контекст
+**до взятия** следующего элемента, поэтому генератор-источник (постраничный
+запрос) не продвигается после завершения контекста; для очень дешёвых
+элементов передайте `every: 100`.
 
 ### Отмена и освобождение ресурсов
 
@@ -111,6 +146,23 @@ $requestController->cancel($reason);   // $reason станет previous у ис�
 Завершённый контекст отсоединяется от родителя и отпускает своих слушателей,
 так что долгоживущий родитель не копит потомков по одному на запрос.
 Контроллер, которым владеете, всегда отменяйте в `finally`.
+
+Бросающий слушатель не останавливает остальных и каскад; его исключение
+пробрасывается после каскада — из `cancel()` или из проверки, обнаружившей
+завершение.
+
+**Из обработчика сигнала никогда не вызывайте `cancel()`** — он запустит
+слушателей в произвольной точке прерванного кода. `requestCancel()` только
+записывает причину; следующая проверка контекста (или потомка) завершает его,
+так что слушатели работают, а их ошибки всплывают, в обычном потоке кода:
+
+```php
+pcntl_async_signals(true);
+pcntl_signal(SIGTERM, static fn() => $workerController->requestCancel(new \RuntimeException('SIGTERM')));
+```
+
+`rasuvaeff/context-cli` оборачивает это с восстановлением обработчиков и
+принудительным выходом по второму сигналу.
 
 ### Воркеры очередей
 
@@ -150,25 +202,77 @@ $headers['X-Request-Timeout-Ms'] = (string) (int) $context->remainingMs();
 Входящее значение проверяйте (целое число в ограниченном диапазоне), прежде
 чем ему доверять. Для PSR-15/PSR-18 это реализует `rasuvaeff/context-http`.
 
-### Тестирование
-
-Подставьте `TimeSource`, чтобы управлять дедлайнами детерминированно:
+Чтобы передать и значения запроса, используйте `WireCodec`. Передаются только
+классы, реализующие `WireValue`, под стабильными алиасами, которые выбираете
+вы:
 
 ```php
-$clock = new FakeTimeSource();               // ваш TimeSource, возвращающий nowNs()
-[$context] = Context::background($clock)->withTimeout(1.0);
-$clock->advanceNs(2_000_000_000);
-$context->isExpired();                        // true
+final readonly class TenantId implements WireValue
+{
+    public function __construct(public string $value) { /* валидация */ }
+    public function toWire(): string { return $this->value; }
+    public static function fromWire(string $wire): static { return new static($wire); }
+}
+
+$codec = new WireCodec(['tenant' => TenantId::class]);
+
+$message->attributes = $codec->encode($context);    // ['budget_ms' => 790, 'values' => ['tenant' => 'acme']]
+
+[$context, $controller] = $codec->decode($message->attributes, Context::background(), maxBudgetMs: 30_000);
 ```
+
+`decode()` считает вход недоверенным и никогда на нём не бросает: бюджет
+ограничен `maxBudgetMs` и родителем, некорректный бюджет игнорируется,
+неизвестные алиасы отбрасываются, значение, чей `fromWire()` бросил,
+отбрасывается (передайте `onInvalid`, чтобы это залогировать). Отмена не
+передаётся — это событие, а не состояние.
+
+### Тестирование
+
+Пакет поставляет детерминированные часы в `Rasuvaeff\Context\Testing`:
+
+```php
+use Rasuvaeff\Context\Testing\FakeTimeSource;
+use Rasuvaeff\Context\Testing\SteppingTimeSource;
+
+$clock = new FakeTimeSource();               // он же Sleeper: sleep() двигает часы
+[$context] = Context::background($clock)->withTimeout(1.0);
+$clock->advanceMs(2_000);
+$context->isExpired();                        // true
+
+$racy = new SteppingTimeSource(600_000_000);  // +0,6 с на каждое чтение
+```
+
+`SteppingTimeSource` сдвигает часы между двумя последовательными проверками
+внутри одного вызова — так доказывается, что адаптер никогда не действует по
+истёкшему бюджету.
+
+### Как писать адаптер
+
+- **Читайте `remainingMs()` до `assertActive()`.** Если читать после проверки,
+  дедлайн, прошедший между ними, даёт `0.0` — а `0` для curl, для
+  `max_execution_time` в ClickHouse и для `MAX_EXECUTION_TIME` в MySQL
+  означает *без таймаута*. Если читать до, прошедшая проверка гарантирует
+  минимум 1 мс.
+- Ошибку таймаута транспорта превращайте в `ContextExpiredException` с
+  исходной в `previous`, если к этому моменту контекст истёк; иначе
+  пробрасывайте как есть (таймаут, выставленный не вами).
+- Гонку тестируйте через `SteppingTimeSource`.
 
 ### Публичный API
 
 | Класс | Описание |
 |---|---|
-| `Context` | Неизменяемое представление: `background()`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `remainingMs()`, `deadlineNs()`, `onTerminate()` |
-| `ContextController` | Владелец ветки: `cancel(?Throwable $reason = null)` |
+| `Context` | Неизменяемое представление: `background(?TimeSource, ?Sleeper)`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withReserve()`, `withoutCancel()`, `joinedWith()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `remainingMs()`, `deadlineNs()`, `sleep()`, `iterate()`, `onTerminate()` |
+| `ContextController` | Владелец ветки: `cancel(?Throwable $reason = null)`, `requestCancel(?Throwable $reason = null)` |
 | `TimeSource` | Шов монотонных часов (`nowNs(): int`) для детерминированных тестов |
 | `HrTimeSource` | Продакшен-реализация на `hrtime()` |
+| `Sleeper` | Шов сна (`sleepNs(int)`) за `sleep()`; может вернуться раньше |
+| `UsleepSleeper` | Продакшен-реализация на `usleep()` |
+| `WireCodec` | Бюджет и разрешённые значения через границу процесса: `encode()`, `decode()` |
+| `WireValue` | Значение, которое может пересечь границу: `toWire()`, `fromWire()` |
+| `Testing\FakeTimeSource` | Детерминированные часы и sleeper: `advanceNs()`, `advanceMs()` |
+| `Testing\SteppingTimeSource` | Часы, сдвигающиеся на каждом чтении, для тестов гонок |
 | `TerminationCause` | Причина завершения (отмена или дедлайн), передаётся слушателям |
 | `ContextException` | Базовое исключение контекста (`RuntimeException`) |
 | `ContextCancelledException` | Явная отмена, обнаруженная `assertActive()`; причина — `previous` |
@@ -182,7 +286,9 @@ $context->isExpired();                        // true
 переводить оставшийся бюджет в собственные таймауты или регистрировать
 слушателя `onTerminate()` для очистки. Бюджет, пришедший из другого процесса,
 — недоверенный вход: проверьте и ограничьте его, прежде чем строить из него
-контекст.
+контекст. `WireCodec::decode()` делает это и принимает значения только через
+`WireValue::fromWire()` из списка разрешённых классов, никогда не через
+`unserialize()`: валидируйте в `fromWire()` и бросайте на всём неожиданном.
 
 ## Примеры
 

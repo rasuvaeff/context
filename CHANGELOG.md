@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 — 2026-10-15
+
+- Added: `Testing\FakeTimeSource` and `Testing\SteppingTimeSource` (#8).
+- Added: `Sleeper`, `UsleepSleeper` and `Context::sleep()`; `background()`
+  takes an optional `Sleeper` (#9).
+- Added: `Context::withoutCancel()` (#10).
+- Added: `Context::withReserve()` (#11).
+- Added: `Context::iterate()` (#12).
+- Added: `ContextController::requestCancel()` — deferred cancellation safe
+  from signal handlers; listener failures surface from the next check (#13).
+- Added: `Context::joinedWith()` — the internal state is now a DAG; a
+  terminated node detaches from both parents (#14).
+- Added: `WireCodec` and `WireValue` (#15).
+- Fixed: `withTimeout()` truncated the duration to whole nanoseconds, so
+  `withTimeout(1.015)` reported `remainingMs() === 1014.0` right away.
+- Docs: "Writing an adapter" — read the budget before `assertActive()`.
+
 ## 0.2.0 — 2026-10-11
 
 - `Context::onTerminate()` returns an unsubscribe closure
