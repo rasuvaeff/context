@@ -11,6 +11,7 @@
 Deadline, cancellation and request-scoped values for PHP
 
 > Using an AI coding assistant? [llms.txt](llms.txt) contains a compact API reference you can share with the model.
+> Projects using the [llm/skills](https://github.com/roxblnfk/skills) Composer plugin also get this package's agent skill synced into `.agents/skills/` automatically on install.
 
 ## Requirements
 
@@ -217,8 +218,9 @@ $message->attributes = $codec->encode($context);    // ['budget_ms' => 790, 'val
 ```
 
 `decode()` treats its input as untrusted and never throws on it: the budget is
-capped by `maxBudgetMs` and by the parent, a malformed budget is ignored,
-unknown aliases are dropped, and a value whose `fromWire()` throws is dropped
+capped by `maxBudgetMs` and by the parent, a missing or malformed budget falls
+back to `maxBudgetMs` (bad input never lifts the limit), unknown aliases are
+dropped, and a value whose `fromWire()` throws is dropped
 (pass `onInvalid` to log it). Cancellation is not carried — it is an event,
 not state.
 

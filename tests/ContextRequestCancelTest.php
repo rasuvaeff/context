@@ -159,6 +159,28 @@ final class ContextRequestCancelTest
         throw new \LogicException('the listener failure was expected to surface');
     }
 
+    public function everyAppliedOrOverriddenRequestReleasesTheFastPath(): void
+    {
+        $before = $this->pendingRequests();
+        [$first, $firstController] = Context::background()->withCancel();
+        [$second, $secondController] = Context::background()->withCancel();
+        [, $terminatedController] = Context::background()->withCancel();
+        $terminatedController->cancel();
+
+        $firstController->requestCancel();
+        $firstController->requestCancel();
+        $secondController->requestCancel();
+        $terminatedController->requestCancel();
+
+        Assert::same($this->pendingRequests(), $before + 2);
+
+        $first->isTerminated();
+        $secondController->cancel();
+
+        Assert::same($this->pendingRequests(), $before);
+        Assert::true($second->isCancelled());
+    }
+
     public function aRequestReachesAJoinedContextThroughEitherParent(): void
     {
         [$worker, $workerController] = Context::background()->withCancel();
@@ -263,5 +285,12 @@ final class ContextRequestCancelTest
         }
 
         return $nodes;
+    }
+
+    private function pendingRequests(): int
+    {
+        $count = (new \ReflectionProperty(ContextState::class, 'pendingRequests'))->getValue();
+
+        return \is_int($count) ? $count : -1;
     }
 }

@@ -92,5 +92,6 @@ final readonly class TenantId implements WireValue {
 $codec = new WireCodec(['tenant' => TenantId::class], onInvalid: null);
 $wire = $codec->encode($ctx);       // ['budget_ms' => int|null, 'values' => ['tenant' => '...']]; throws if terminated
 [$ctx, $c] = $codec->decode($wire, Context::background(), maxBudgetMs: 30_000);
-// decode never throws on input: bad budget ignored, unknown alias / failing fromWire() dropped
+// decode never throws on input: missing/bad budget → maxBudgetMs (never unlimited),
+// unknown alias / failing fromWire() dropped
 ```

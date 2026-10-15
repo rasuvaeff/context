@@ -40,6 +40,13 @@ final class WireCodecTest
         ]);
     }
 
+    public function aMissingBudgetNeverLiftsTheLimit(): void
+    {
+        [$context] = $this->codec()->decode(['values' => ['tenant' => 'acme']], Context::background(new FakeTimeSource()), maxBudgetMs: 2_000);
+
+        Assert::same($context->remainingMs(), 2_000.0);
+    }
+
     public function encodesNoBudgetWithoutADeadline(): void
     {
         Assert::same($this->codec()->encode(Context::background()), ['budget_ms' => null, 'values' => []]);
@@ -105,11 +112,11 @@ final class WireCodecTest
     }
 
     #[DataProvider('malformedBudgetProvider')]
-    public function aMalformedBudgetIsIgnored(mixed $budget): void
+    public function aMalformedBudgetFallsBackToTheLimit(mixed $budget): void
     {
-        [$context] = $this->codec()->decode(['budget_ms' => $budget], Context::background(), maxBudgetMs: 5_000);
+        [$context] = $this->codec()->decode(['budget_ms' => $budget], Context::background(new FakeTimeSource()), maxBudgetMs: 5_000);
 
-        Assert::null($context->deadlineNs());
+        Assert::same($context->remainingMs(), 5_000.0);
         Assert::false($context->isTerminated());
     }
 
@@ -145,11 +152,11 @@ final class WireCodecTest
     }
 
     #[DataProvider('malformedWireProvider')]
-    public function malformedInputDecodesToAPlainChild(mixed $wire): void
+    public function malformedInputDecodesToTheLimitWithoutValues(mixed $wire): void
     {
-        [$context] = $this->codec()->decode($wire, Context::background(), maxBudgetMs: 1_000);
+        [$context] = $this->codec()->decode($wire, Context::background(new FakeTimeSource()), maxBudgetMs: 1_000);
 
-        Assert::null($context->deadlineNs());
+        Assert::same($context->remainingMs(), 1_000.0);
         Assert::null($context->value(TenantId::class));
     }
 
@@ -201,7 +208,7 @@ final class WireCodecTest
 
         Assert::same($decoded->value(TenantId::class)?->value, $tenant);
         Assert::same($decoded->value(Locale::class)?->value, $locale);
-        Assert::same($decoded->remainingMs(), $source->remainingMs());
+        Assert::same($decoded->remainingMs(), $source->remainingMs() ?? 60_000.0);
 
         Classify::cover($budgetMs !== null, 'with a budget', 20);
         Classify::cover($locale === null, 'without a locale', 10);

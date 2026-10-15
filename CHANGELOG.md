@@ -17,10 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from signal handlers; listener failures surface from the next check (#13).
 - Added: `Context::joinedWith()` — the internal state is now a DAG; a
   terminated node detaches from both parents (#14).
-- Added: `WireCodec` and `WireValue` (#15).
+- Added: `WireCodec` and `WireValue` (#15). A missing or malformed incoming
+  budget falls back to `maxBudgetMs`; bad input never lifts the limit.
 - Fixed: `withTimeout()` truncated the duration to whole nanoseconds, so
   `withTimeout(1.015)` reported `remainingMs() === 1014.0` right away.
 - Docs: "Writing an adapter" — read the budget before `assertActive()`.
+- Docs: the agent skill (`resources/skills/rasuvaeff-context/SKILL.md`) is
+  rewritten for 0.3 — safety rules, decision table; it no longer mentions a
+  scheduler that does not exist.
 
 ## 0.2.0 — 2026-10-11
 

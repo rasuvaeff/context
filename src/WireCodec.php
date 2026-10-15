@@ -79,8 +79,9 @@ final readonly class WireCodec
     /**
      * Rebuilds a context under `$parent` from untrusted input. The incoming
      * budget is capped by `$maxBudgetMs` and can only shorten the parent's;
-     * a malformed budget is ignored; unknown aliases and values whose
-     * `fromWire()` throws are dropped. Never throws on bad input.
+     * a missing or malformed budget falls back to `$maxBudgetMs` — bad input
+     * never lifts the limit. Unknown aliases and values whose `fromWire()`
+     * throws are dropped. Never throws on bad input.
      *
      * @param positive-int $maxBudgetMs
      *
@@ -91,9 +92,7 @@ final readonly class WireCodec
         $wire = \is_array($wire) ? $wire : [];
         $budgetMs = $this->budget($wire['budget_ms'] ?? null);
 
-        [$context, $controller] = $budgetMs === null
-            ? $parent->withCancel()
-            : $parent->withTimeout((float) min($budgetMs, $maxBudgetMs) / 1000.0);
+        [$context, $controller] = $parent->withTimeout((float) min($budgetMs ?? $maxBudgetMs, $maxBudgetMs) / 1000.0);
 
         $values = $this->map($wire['values'] ?? null);
         foreach ($this->aliases as $alias => $class) {
