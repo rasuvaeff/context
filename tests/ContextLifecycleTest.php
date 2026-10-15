@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Rasuvaeff\Context\Tests;
 
 use Rasuvaeff\Context\Context;
+use Rasuvaeff\Context\ContextCancelledException;
 use Rasuvaeff\Context\ContextController;
+use Rasuvaeff\Context\ContextException;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Internal\ContextState;
 use Rasuvaeff\Context\TerminationCause;
@@ -26,6 +28,7 @@ use Testo\Test;
 #[Covers(ContextState::class)]
 #[Covers(TerminationCause::class)]
 #[Covers(ContextExpiredException::class)]
+#[Covers(ContextCancelledException::class)]
 final class ContextLifecycleTest
 {
     public function cancelledChildrenAreDetachedFromTheParent(): void
@@ -286,6 +289,170 @@ final class ContextLifecycleTest
         yield 'no levels' => [[]];
         yield 'shadowed by a nearer value' => [[true, false, true, false]];
         yield 'only the root level' => [[true, false, false]];
+    }
+
+    /**
+     * @param non-empty-list<array{int, int}> $nodes [parent pick, own deadline in ms or 0 for none]
+     * @param list<array{int, int}> $operations [0 advance | 1 cancel | 2 late listener, argument]
+     */
+    #[Property(runs: 300)]
+    public function terminationIsExclusiveStableAndNotifiesOnce(array $nodes, array $operations): void
+    {
+        $clock = new FakeTimeSource();
+        $startNs = $clock->nowNs();
+        $contexts = [];
+        $controllers = [];
+        $parents = [];
+        $calls = [];
+
+        foreach ($nodes as $i => [$pick, $deadlineMs]) {
+            $parent = $i === 0 ? -1 : $pick % $i;
+            $base = $parent === -1 ? Context::background($clock) : $contexts[$parent];
+            [$context, $controller] = $deadlineMs === 0
+                ? $base->withCancel()
+                : $base->withDeadline($startNs + $deadlineMs * 1_000_000);
+            $calls[$i] = 0;
+            $context->onTerminate(static function () use (&$calls, $i): void {
+                $calls[$i]++;
+            });
+            $contexts[] = $context;
+            $controllers[] = $controller;
+            $parents[] = $parent;
+        }
+
+        $kinds = [];
+        $expiredDeadlines = [];
+        /** @var list<array{node: int, calls: int}> $late */
+        $late = [];
+        $cancelledAfterExpiry = false;
+        $this->assertTerminationInvariants($contexts, $parents, $calls, $late, $kinds, $expiredDeadlines);
+
+        foreach ($operations as [$operation, $argument]) {
+            $node = $argument % \count($contexts);
+
+            if ($operation === 0) {
+                $clock->advanceNs(($argument % 40) * 1_000_000);
+            } elseif ($operation === 1) {
+                $cancelledAfterExpiry = $cancelledAfterExpiry || $contexts[$node]->isExpired();
+                $controllers[$node]->cancel();
+            } else {
+                $terminal = $contexts[$node]->isTerminated();
+                $index = \count($late);
+                $late[] = ['node' => $node, 'calls' => 0];
+                $contexts[$node]->onTerminate(static function () use (&$late, $index): void {
+                    $late[$index]['calls']++;
+                });
+
+                Assert::same($late[$index]['calls'], $terminal ? 1 : 0);
+            }
+
+            $this->assertTerminationInvariants($contexts, $parents, $calls, $late, $kinds, $expiredDeadlines);
+        }
+
+        Classify::cover(\in_array('expired', $kinds, strict: true), 'a deadline expired', 20);
+        Classify::cover(\in_array('cancelled', $kinds, strict: true), 'a node was cancelled', 20);
+        Classify::cover($cancelledAfterExpiry, 'cancelled after expiry', 5);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function terminationIsExclusiveStableAndNotifiesOnceGenerators(): array
+    {
+        return [
+            'nodes' => Gen::nonEmptyArrayOf(
+                Gen::tuple(
+                    Gen::intBetween(0, 1_000),
+                    Gen::frequency([[1, Gen::constant(value: 0)], [2, Gen::intBetween(1, 100)]]),
+                ),
+                8,
+            ),
+            'operations' => Gen::arrayOf(
+                Gen::tuple(
+                    Gen::frequency([
+                        [2, Gen::constant(value: 0)],
+                        [1, Gen::constant(value: 1)],
+                        [1, Gen::constant(value: 2)],
+                    ]),
+                    Gen::intBetween(0, 1_000),
+                ),
+                0,
+                12,
+            ),
+        ];
+    }
+
+    /** @return iterable<string, array{non-empty-list<array{int, int}>, list<array{int, int}>}> */
+    public static function terminationIsExclusiveStableAndNotifiesOnceExamples(): iterable
+    {
+        yield 'a passed deadline' => [[[0, 1]], [[0, 1]]];
+        yield 'cancel after expiry is a no-op' => [[[0, 5]], [[0, 10], [1, 0]]];
+        yield 'expiry after cancel is a no-op' => [[[0, 5]], [[1, 0], [0, 10]]];
+        yield 'cancel twice' => [[[0, 0]], [[1, 0], [1, 0]]];
+        yield 'a three-level cascade' => [[[0, 0], [0, 0], [1, 0]], [[1, 0]]];
+        yield 'a late listener on a terminal context' => [[[0, 0]], [[1, 0], [2, 0]]];
+        yield 'a late listener before termination' => [[[0, 5]], [[2, 0], [0, 10]]];
+    }
+
+    /**
+     * Observes every node and checks the termination laws: exactly one cause,
+     * never changing; assertActive() throws the matching exception with a
+     * memoized deadline; each listener has run once iff its node terminated;
+     * a terminated parent implies terminated children. The counters are
+     * taken by reference because observing a node runs its listeners.
+     *
+     * @param list<Context> $contexts
+     * @param list<int> $parents
+     * @param array<int, int> $calls
+     * @param list<array{node: int, calls: int}> $late
+     * @param array<int, string> $kinds
+     * @param array<int, int> $expiredDeadlines
+     */
+    private function assertTerminationInvariants(
+        array $contexts,
+        array $parents,
+        array &$calls,
+        array &$late,
+        array &$kinds,
+        array &$expiredDeadlines,
+    ): void {
+        foreach ($contexts as $i => $context) {
+            $terminated = $context->isTerminated();
+            $cancelled = $context->isCancelled();
+            $expired = $context->isExpired();
+
+            Assert::false($cancelled && $expired);
+            Assert::same($terminated, $cancelled || $expired);
+            Assert::same($calls[$i], $terminated ? 1 : 0);
+
+            if (isset($kinds[$i])) {
+                Assert::true($terminated);
+                Assert::same($cancelled ? 'cancelled' : 'expired', $kinds[$i]);
+            } elseif ($terminated) {
+                $kinds[$i] = $cancelled ? 'cancelled' : 'expired';
+            }
+
+            $thrown = null;
+
+            try {
+                $context->assertActive();
+            } catch (ContextException $exception) {
+                $thrown = $exception;
+            }
+
+            Assert::same($thrown instanceof ContextCancelledException, $cancelled);
+            Assert::same($thrown instanceof ContextExpiredException, $expired);
+            if ($thrown instanceof ContextExpiredException) {
+                $expiredDeadlines[$i] ??= $thrown->deadlineNs();
+                Assert::same($thrown->deadlineNs(), $expiredDeadlines[$i]);
+            }
+
+            if ($parents[$i] !== -1 && $contexts[$parents[$i]]->isTerminated()) {
+                Assert::true($terminated);
+            }
+        }
+
+        foreach ($late as $listener) {
+            Assert::same($listener['calls'], $contexts[$listener['node']]->isTerminated() ? 1 : 0);
+        }
     }
 
     private function childCount(Context $context): int
