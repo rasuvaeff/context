@@ -1,6 +1,6 @@
 {
     "name": "rasuvaeff/context",
-    "description": "Deadline, cancellation and request-scoped values for PHP",
+    "description": "Deadlines, cancellation and request-scoped values for PHP — one budget through HTTP calls, DB statement timeouts, CLI shutdown and subprocesses",
     "license": "BSD-3-Clause",
     "type": "library",
     "authors": [
