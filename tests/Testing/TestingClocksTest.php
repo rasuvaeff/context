@@ -30,6 +30,11 @@ final class TestingClocksTest
         Assert::same($clock->nowNs(), 5_000 + 10 + 1_500_000 + 7);
     }
 
+    public function aFakeClockStartsOneSecondIn(): void
+    {
+        Assert::same((new FakeTimeSource())->nowNs(), 1_000_000_000);
+    }
+
     public function fractionalMillisecondsRoundToTheNearestNanosecond(): void
     {
         $clock = new FakeTimeSource(0);

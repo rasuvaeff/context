@@ -277,8 +277,10 @@ final readonly class Context
      *
      * @return \Generator<TKey, TValue, mixed, void>
      */
-    public function iterate(iterable $items, int $every = 1): \Generator
-    {
+    public function iterate(
+        iterable $items,
+        int $every = 1,
+    ): \Generator {
         if ($every < 1) {
             throw new \InvalidArgumentException('Check interval must be positive');
         }

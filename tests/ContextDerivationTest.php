@@ -37,6 +37,15 @@ final class ContextDerivationTest
         Assert::same($work->remainingMs(), 2_500.0);
     }
 
+    public function aReserveRoundsToTheNearestNanosecond(): void
+    {
+        $clock = new FakeTimeSource();
+        [$request] = Context::background($clock)->withTimeout(3.0);
+
+        Assert::same($request->withReserve(1.4e-9)[0]->deadlineNs(), 4_000_000_000 - 1);
+        Assert::same($request->withReserve(1.6e-9)[0]->deadlineNs(), 4_000_000_000 - 2);
+    }
+
     public function aReserveWithoutAParentDeadlineIsACancellableBranch(): void
     {
         [$work, $controller] = Context::background()->withReserve(0.5);

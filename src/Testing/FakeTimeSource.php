@@ -16,7 +16,9 @@ use Rasuvaeff\Context\TimeSource;
  */
 final class FakeTimeSource implements TimeSource, Sleeper
 {
-    public function __construct(private int $nowNs = 1_000_000_000) {}
+    public function __construct(
+        private int $nowNs = 1_000_000_000,
+    ) {}
 
     #[\Override]
     public function nowNs(): int

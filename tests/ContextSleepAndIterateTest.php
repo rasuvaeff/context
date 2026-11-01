@@ -280,6 +280,35 @@ final class ContextSleepAndIterateTest
         Context::background()->iterate([1], every: 0);
     }
 
+    public function iteratingChecksBeforeEveryElementByDefault(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withTimeout(0.0025);
+        $processed = [];
+
+        try {
+            foreach ($context->iterate([1, 2, 3, 4, 5, 6]) as $item) {
+                $processed[] = $item;
+                $clock->advanceMs(1);
+            }
+        } catch (ContextExpiredException) {
+            Assert::same($processed, [1, 2, 3]);
+
+            return;
+        }
+
+        throw new \LogicException('an expiry was expected');
+    }
+
+    public function aSleepLongerThanTheRoomLeftSaturatesAtTheClockCeiling(): void
+    {
+        $clock = new FakeTimeSource(intdiv(\PHP_INT_MAX, 2));
+
+        Context::background($clock)->sleep(6.0e9);
+
+        Assert::same($clock->nowNs(), \PHP_INT_MAX);
+    }
+
     public function aCheckIntervalSkipsChecksBetweenElements(): void
     {
         $clock = new FakeTimeSource();
