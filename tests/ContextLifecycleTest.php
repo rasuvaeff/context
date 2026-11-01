@@ -115,6 +115,33 @@ final class ContextLifecycleTest
         Assert::same($this->listenerCount($context), 0);
     }
 
+    public function severalFailingListenersAreChainedInOneException(): void
+    {
+        [$context, $controller] = Context::background()->withCancel();
+        foreach (['first', 'second', 'third'] as $message) {
+            $context->onTerminate(static function () use ($message): void {
+                throw new \DomainException($message);
+            });
+        }
+
+        try {
+            $controller->cancel();
+        } catch (\RuntimeException $error) {
+            Assert::same($error->getMessage(), 'One or more context termination listeners failed');
+            $second = $error->getPrevious();
+            Assert::same($second?->getMessage(), 'Context termination listener failed');
+            $first = $second?->getPrevious();
+            Assert::same($first?->getMessage(), 'Context termination listener failed');
+            $last = $first?->getPrevious();
+            Assert::same($last?->getMessage(), 'third');
+            Assert::null($last?->getPrevious());
+
+            return;
+        }
+
+        throw new \LogicException('an aggregated failure was expected');
+    }
+
     public function aListenerOnATerminatedContextRunsAtOnce(): void
     {
         [$context, $controller] = Context::background()->withCancel();

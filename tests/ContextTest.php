@@ -9,6 +9,7 @@ use Rasuvaeff\Context\ContextCancelledException;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Testing\FakeTimeSource;
 use Rasuvaeff\Context\Tests\Support\RequestId;
+use Rasuvaeff\Context\Tests\Support\TenantId;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
@@ -216,6 +217,12 @@ final class ContextTest
         $child = $root->withValue(RequestId::class, new RequestId('child'));
 
         Assert::same($child->value(RequestId::class)?->value, 'child');
+    }
+
+    public function aValueThatIsNotAnInstanceOfItsKeyIsRejected(): void
+    {
+        Expect::exception(\InvalidArgumentException::class);
+        Context::background()->withValue(RequestId::class, new TenantId('acme'));
     }
 
     #[DataProvider('invalidTimeoutProvider')]

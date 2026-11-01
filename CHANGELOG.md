@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Mutation testing now counts code the tests execute without naming it in `#[Covers]`
+  (`infection --with-uncovered`), with `PublicVisibility` off and default-parameter
+  signature lines ignored; tests added for value/key mismatch, default check
+  interval, clock ceiling saturation, chained listener failures, the fake clock
+  default and nanosecond reserve rounding. `iterate()` and `FakeTimeSource`
+  constructor signatures reformatted onto several lines (no behaviour change).
+
 ## 0.3.0 — 2026-10-15
 
 - Added: `Testing\FakeTimeSource` and `Testing\SteppingTimeSource` (#8).
