@@ -73,7 +73,8 @@ make release-check
   walks the ancestors (with a visited set, joins share ancestors) and applies
   the topmost request. A process-wide pending counter skips the walk while it
   is zero — keep it balanced (increment on record, decrement when the pending
-  cause is consumed), or every check pays the walk.
+  cause is consumed or its state is destructed unobserved), or every check
+  pays the walk.
 - **`withoutCancel()` has no state link and no parent link**: values are
   copied, so a cleanup context keeps nothing of the request tree alive.
 - **Seconds → nanoseconds uses `round()`, never a bare `(int)`**: `1.015 * 1e9`

@@ -293,6 +293,135 @@ final class ContextTest
         }
     }
 
+    public function anActiveContextHasNoCause(): void
+    {
+        Assert::null(Context::background()->cause());
+    }
+
+    public function causeOfACancelledContextKeepsTheReason(): void
+    {
+        [$context, $controller] = Context::background()->withCancel();
+        $reason = new \RuntimeException('shutdown');
+        $controller->cancel($reason);
+
+        $cause = $context->cause();
+
+        Assert::true($cause?->isCancelled() === true);
+        Assert::same($cause?->reason(), $reason);
+    }
+
+    public function causeObservesTheDeadline(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(1_000_000_000);
+        $clock->advanceNs(1_000_000_000);
+
+        $cause = $context->cause();
+
+        Assert::true($cause?->isExpired() === true);
+        Assert::same($cause?->deadlineNs(), 1_000_000_000);
+    }
+
+    public function causeObservesARequestedCancellation(): void
+    {
+        [$context, $controller] = Context::background()->withCancel();
+        $controller->requestCancel();
+
+        Assert::true($context->cause()?->isCancelled() === true);
+    }
+
+    public function budgetIsNullWithoutADeadline(): void
+    {
+        Assert::null(Context::background()->budgetMs());
+    }
+
+    public function budgetIsTheFlooredRemainderAndAtLeastOneMillisecond(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(3_000_000_000);
+
+        $clock->advanceNs(1_000_001_000);
+        Assert::same($context->budgetMs(), 999);
+
+        $clock->advanceNs(999_000_000);
+        Assert::same($context->budgetMs(), 1);
+    }
+
+    public function budgetOfAnExpiredContextThrows(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline(1_000_000_000);
+        $clock->advanceNs(1_000_000_000);
+
+        Expect::exception(ContextExpiredException::class);
+
+        $context->budgetMs();
+    }
+
+    public function budgetOfACancelledContextThrows(): void
+    {
+        [$context, $controller] = Context::background()->withTimeout(5.0);
+        $controller->cancel();
+
+        Expect::exception(ContextCancelledException::class);
+
+        $context->budgetMs();
+    }
+
+    public function valuesSurviveEveryKindOfDerivation(): void
+    {
+        $context = Context::background()->withValue(TenantId::class, new TenantId('acme'));
+        [$cancellable] = $context->withCancel();
+        [$timed] = $cancellable->withTimeout(1.0);
+        [$joined] = $timed->joinedWith(Context::background());
+
+        Assert::same($joined->withoutCancel()->value(TenantId::class)?->value, 'acme');
+    }
+
+    /**
+     * The budget handed to a lower layer is positive while the context is
+     * active and never exceeds the remainder.
+     */
+    #[Property(runs: 300)]
+    public function budgetIsPositiveAndWithinTheRemainder(int $elapsedNs, int $remainingNs): void
+    {
+        $clock = new FakeTimeSource();
+        [$context] = Context::background($clock)->withDeadline($clock->nowNs() + $elapsedNs + $remainingNs);
+        $clock->advanceNs($elapsedNs);
+
+        Classify::cover($remainingNs <= 0, 'expired', 5);
+        Classify::cover($remainingNs > 0 && $remainingNs < 1_000_000, 'under a millisecond left', 5);
+        Classify::cover($remainingNs >= 1_000_000, 'a millisecond or more left', 30);
+
+        if ($remainingNs <= 0) {
+            Assert::true($context->isExpired());
+
+            return;
+        }
+
+        Assert::same($context->budgetMs(), max(1, intdiv($remainingNs, 1_000_000)));
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function budgetIsPositiveAndWithinTheRemainderGenerators(): array
+    {
+        return [
+            'elapsedNs' => Gen::intBetween(0, 5_000_000_000),
+            'remainingNs' => Gen::frequency([
+                [3, Gen::intBetween(-1_000_000_000, 5_000_000_000)],
+                [1, Gen::intBetween(1, 999_999)],
+            ]),
+        ];
+    }
+
+    /** @return iterable<string, array{int, int}> */
+    public static function budgetIsPositiveAndWithinTheRemainderExamples(): iterable
+    {
+        yield 'one nanosecond left' => [1_000, 1];
+        yield 'exactly one millisecond left' => [1_000, 1_000_000];
+        yield 'just expired' => [1_000, 0];
+    }
+
     #[Property(runs: 200)]
     public function remainingBudgetNeverIncreases(int $advanceMs, int $initialMs): void
     {

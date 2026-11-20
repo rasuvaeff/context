@@ -62,11 +62,21 @@ final readonly class WireCodec
      */
     public function encode(Context $context): array
     {
-        // Read before the check: once assertActive() passes, the budget is
-        // never the 0.0 of an expired context.
-        $remainingMs = $context->remainingMs();
-        $context->assertActive();
+        return [
+            'budget_ms' => $context->budgetMs(),
+            'values' => $this->encodeValues($context),
+        ];
+    }
 
+    /**
+     * Only the allow-listed values, alias => wire string: the `values` part
+     * of {@see encode()} without its budget, for a transport that carries
+     * the deadline on its own. Does not check the context.
+     *
+     * @return array<string, string>
+     */
+    public function encodeValues(Context $context): array
+    {
         $values = [];
         foreach ($this->aliases as [$alias, $class]) {
             $value = $context->value($class);
@@ -75,10 +85,7 @@ final readonly class WireCodec
             }
         }
 
-        return [
-            'budget_ms' => $remainingMs === null ? null : max(1, (int) $remainingMs),
-            'values' => $values,
-        ];
+        return $values;
     }
 
     /**
@@ -95,11 +102,23 @@ final readonly class WireCodec
     public function decode(mixed $wire, Context $parent, int $maxBudgetMs): array
     {
         $wire = \is_array($wire) ? $wire : [];
-        $budgetMs = $this->budget($wire['budget_ms'] ?? null);
+        $budgetMs = self::budgetFromWire($wire['budget_ms'] ?? null);
 
         [$context, $controller] = $parent->withTimeout((float) min($budgetMs ?? $maxBudgetMs, $maxBudgetMs) / 1000.0);
 
-        $values = $this->map($wire['values'] ?? null);
+        return [$this->decodeValues($wire['values'] ?? null, $context), $controller];
+    }
+
+    /**
+     * Adds the allow-listed values from an untrusted alias => wire string
+     * map (the `values` part of {@see decode()}) to `$context`, which keeps
+     * its deadline and cancellation: no new controller, no budget. Unknown
+     * aliases, non-string entries and values whose `fromWire()` throws are
+     * dropped. Never throws on bad input.
+     */
+    public function decodeValues(mixed $values, Context $context): Context
+    {
+        $values = \is_array($values) ? $values : [];
         foreach ($this->aliases as [$alias, $class]) {
             $raw = $values[$alias] ?? null;
             if (!\is_string($raw)) {
@@ -115,17 +134,18 @@ final readonly class WireCodec
             }
         }
 
-        return [$context, $controller];
+        return $context;
     }
 
-    /** @return array<array-key, mixed> */
-    private function map(mixed $raw): array
-    {
-        return \is_array($raw) ? $raw : [];
-    }
-
-    /** @return positive-int|null */
-    private function budget(mixed $raw): ?int
+    /**
+     * The single rule for an incoming budget in whole milliseconds: an int
+     * or a string of 1–9 digits (leading zeros allowed), value 1–999999999.
+     * Anything else — zero, a sign, a fraction, an exponent, a trailing
+     * newline, a longer number — is `null`, never an error.
+     *
+     * @return positive-int|null
+     */
+    public static function budgetFromWire(mixed $raw): ?int
     {
         if (\is_string($raw) && preg_match('/^[0-9]{1,9}\z/', $raw) === 1) {
             $raw = (int) $raw;

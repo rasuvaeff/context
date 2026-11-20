@@ -83,7 +83,7 @@ $root = Context::background();                       // never terminates by itse
 [$capped] = $request->withDeadline($absoluteNs);            // monotonic hrtime() ns
 
 $traced = $request->withValue(RequestId::class, new RequestId('r-42'));
-$traced->value(RequestId::class)?->value;                    // 'r-42' (nearest ancestor wins)
+$traced->value(RequestId::class)?->value;                    // 'r-42' (nearest ancestor wins; psalm infers ?RequestId)
 
 [$work] = $request->withReserve(0.2);                        // the parent deadline minus 200 ms
 $cleanup = $request->withoutCancel();                        // values only: outlives the request
@@ -116,7 +116,14 @@ $request->isTerminated();        // cancelled or expired
 $request->isCancelled();         // explicit cancellation
 $request->isExpired();           // deadline passed
 $request->remainingMs();         // null without a deadline; >= 1.0 while active, 0.0 once expired
+$request->budgetMs();            // null without a deadline; int >= 1, throws once terminated
+$request->cause();               // null while active; the TerminationCause once terminated
 ```
+
+`budgetMs()` is what an adapter hands to a lower layer: it reads the
+remainder, then calls `assertActive()`, and returns whole milliseconds, at
+least 1. `cause()` tells why a context ended without catching an exception;
+like the other checks, it observes a pending cancellation and the deadline.
 
 A **cancelled** context with a deadline keeps reporting its budget:
 `remainingMs()` is the real remainder before the deadline and `1.0` after it
@@ -124,8 +131,8 @@ A **cancelled** context with a deadline keeps reporting its budget:
 or `assertActive()`, not `remainingMs()`, to see whether work may continue.
 
 Deadlines use monotonic `hrtime()` and are observed lazily: the next
-`assertActive()`, `remainingMs()`, `isTerminated()` or `isExpired()` call
-discovers an expired deadline. If the deadline belongs to an ancestor, the
+`assertActive()`, `remainingMs()`, `budgetMs()`, `cause()`, `isTerminated()`
+or `isExpired()` call discovers an expired deadline. If the deadline belongs to an ancestor, the
 ancestor and its whole subtree are terminated. A controller cancellation
 propagates to every descendant immediately. A check costs about 0.2 µs.
 
@@ -235,7 +242,19 @@ $message->attributes = $codec->encode($context);    // ['budget_ms' => 790, 'val
 [$context, $controller] = $codec->decode($message->attributes, Context::background(), maxBudgetMs: 30_000);
 ```
 
-`decode()` treats its input as untrusted and never throws on it: the budget is
+When the transport carries the deadline on its own (an HTTP timeout header),
+send and read only the values:
+
+```php
+$baggage = $codec->encodeValues($context);          // ['tenant' => 'acme'], no check of the context
+$context = $codec->decodeValues($baggage, $context); // same deadline and cancellation, no new controller
+```
+
+`WireCodec::budgetFromWire($raw)` is the one rule for an incoming budget
+(`decode()` and `context-http`'s budget header use it): an int or 1–9 digits,
+leading zeros allowed, value 1–999999999; anything else is `null`.
+
+`decode()` and `decodeValues()` treat their input as untrusted and never throws on it: the budget is
 capped by `maxBudgetMs` and by the parent, a missing or malformed budget falls
 back to `maxBudgetMs` (bad input never lifts the limit), unknown aliases are
 dropped, and a value whose `fromWire()` throws is dropped
@@ -263,10 +282,11 @@ call — the way to prove an adapter never acts on an expired budget.
 
 ### Writing an adapter
 
-- **Read `remainingMs()` before `assertActive()`.** Read after the check, a
-  deadline passing in between yields `0.0` — and `0` means *no timeout* to
-  curl, to ClickHouse's `max_execution_time` and to MySQL's
-  `MAX_EXECUTION_TIME`. Read first, a passing check guarantees at least 1 ms.
+- **Use `budgetMs()`**, or read `remainingMs()` before `assertActive()`.
+  Read after the check, a deadline passing in between yields `0.0` — and `0`
+  means *no timeout* to curl, to ClickHouse's `max_execution_time` and to
+  MySQL's `MAX_EXECUTION_TIME`. Read first, a passing check guarantees at
+  least 1 ms; `budgetMs()` does exactly that.
 - Map the transport's timeout error to `ContextExpiredException` with the
   original as `previous` when the context has expired by then; rethrow it
   untouched otherwise (a timeout you did not set).
@@ -276,13 +296,13 @@ call — the way to prove an adapter never acts on an expired budget.
 
 | Class | Description |
 |---|---|
-| `Context` | Immutable view: `background(?TimeSource, ?Sleeper)`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withReserve()`, `withoutCancel()`, `joinedWith()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `remainingMs()`, `deadlineNs()`, `sleep()`, `iterate()`, `onTerminate()` |
+| `Context` | Immutable view: `background(?TimeSource, ?Sleeper)`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withReserve()`, `withoutCancel()`, `joinedWith()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `cause()`, `remainingMs()`, `budgetMs()`, `deadlineNs()`, `sleep()`, `iterate()`, `onTerminate()` |
 | `ContextController` | Owner handle: `cancel(?Throwable $reason = null)`, `requestCancel(?Throwable $reason = null)` |
 | `TimeSource` | Monotonic clock seam (`nowNs(): int`) for deterministic tests |
 | `HrTimeSource` | Production `hrtime()` implementation |
 | `Sleeper` | Sleep seam (`sleepNs(int)`) behind `sleep()`; may return early |
 | `UsleepSleeper` | Production `usleep()` implementation |
-| `WireCodec` | Budget and allow-listed values across a process boundary: `encode()`, `decode()` |
+| `WireCodec` | Budget and allow-listed values across a process boundary: `encode()`, `decode()`, `encodeValues()`, `decodeValues()`, static `budgetFromWire()` |
 | `WireValue` | A value that may cross the boundary: `toWire()`, `fromWire()` |
 | `Testing\FakeTimeSource` | Deterministic clock and sleeper: `advanceNs()`, `advanceMs()` |
 | `Testing\SteppingTimeSource` | A clock that moves on every read, for race tests |

@@ -29,11 +29,22 @@ final class ContextState
 
     /**
      * Requests not yet applied, process-wide. While it is zero a check skips
-     * the walk over its ancestors. A request left on a state that is garbage
-     * collected unobserved keeps it above zero — that costs speed, never
-     * correctness.
+     * the walk over its ancestors. A state collected with its request still
+     * unapplied gives the count back in {@see __destruct()}.
      */
     private static int $pendingRequests = 0;
+
+    /**
+     * Nothing can observe a collected state any more: without this, one
+     * unobserved `requestCancel()` would make every later check in a
+     * long-running worker walk its ancestors.
+     */
+    public function __destruct()
+    {
+        if ($this->pending instanceof TerminationCause) {
+            self::$pendingRequests--;
+        }
+    }
 
     /** @throws \Throwable */
     public function addChild(self $child): void
