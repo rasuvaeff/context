@@ -104,3 +104,15 @@ $wire = $codec->encode($ctx);       // ['budget_ms' => int|null, 'values' => ['t
 // decode never throws on input: missing/bad budget → maxBudgetMs (never unlimited),
 // unknown alias / failing fromWire() dropped
 ```
+
+## 0.5.0 additions
+
+```php
+$ctx->budgetMs();          // ?int: null = no deadline, else positive-int (floored ms, min 1);
+                           // reads the remainder, then assertActive() — use it in adapters
+$ctx->cause();             // ?TerminationCause: null while active; observes requests and the deadline
+$ctx->value(TenantId::class);   // psalm: @template T, class-string<T> → T|null
+$codec->encodeValues($ctx);               // array<string, string>: values only, no context check
+$ctx = $codec->decodeValues($map, $ctx);  // adds values to $ctx (same deadline/controller); never throws on input
+WireCodec::budgetFromWire($raw);          // ?positive-int: int or 1-9 digits (leading zeros ok), 1..999999999; else null
+```

@@ -13,7 +13,6 @@ final readonly class Context
 {
     private function __construct(
         private ContextState $state,
-        private ?self $parent,
         private TimeSource $timeSource,
         private Sleeper $sleeper,
         private ?int $deadlineNs,
@@ -32,7 +31,6 @@ final readonly class Context
 
         return new self(
             state: new ContextState(),
-            parent: null,
             timeSource: $timeSource,
             sleeper: $sleeper ?? ($timeSource instanceof Sleeper ? $timeSource : new UsleepSleeper()),
             deadlineNs: null,
@@ -63,14 +61,7 @@ final readonly class Context
             throw new \InvalidArgumentException('Timeout must be finite');
         }
 
-        $nowNs = $this->timeSource->nowNs();
-        // round(), not (int): 1.015 * 1e9 is 1014999999.99…, and truncating
-        // made remainingMs() report 1014 right after asking for 1015.
-        $durationNs = round(max(0.0, $seconds) * 1_000_000_000.0);
-        $roomNs = \PHP_INT_MAX - $nowNs;
-        $deadline = $durationNs >= (float) $roomNs ? \PHP_INT_MAX : $nowNs + (int) $durationNs;
-
-        return $this->withDeadline($deadline);
+        return $this->withDeadline($this->later($this->timeSource->nowNs(), $seconds));
     }
 
     /** @return array{self, ContextController} */
@@ -101,9 +92,7 @@ final readonly class Context
             return $this->withCancel();
         }
 
-        // round(), not (int): 0.892 * 1e9 is 891999999.99…, and truncating
-        // would leave the deadline a nanosecond later than asked.
-        $reserveNs = round($seconds * 1_000_000_000.0);
+        $reserveNs = $this->nanoseconds($seconds);
         $deadline = $reserveNs >= (float) $this->deadlineNs ? 0 : $this->deadlineNs - (int) $reserveNs;
 
         return $this->withDeadline($deadline);
@@ -120,7 +109,6 @@ final readonly class Context
         // does not keep the request's context tree alive.
         return new self(
             state: new ContextState(),
-            parent: null,
             timeSource: $this->timeSource,
             sleeper: $this->sleeper,
             deadlineNs: null,
@@ -156,10 +144,15 @@ final readonly class Context
         return [$context, new ContextController($state)];
     }
 
-    /** @param class-string $key */
+    /**
+     * @template T of object
+     *
+     * @param class-string<T> $key
+     * @param T $value
+     */
     public function withValue(string $key, object $value): self
     {
-        if (!$value instanceof $key) {
+        if (!$this->matchesKey($value, $key)) {
             throw new \InvalidArgumentException('Context value does not match its key');
         }
 
@@ -176,8 +169,7 @@ final readonly class Context
 
     public function assertActive(): void
     {
-        $this->observe();
-        $cause = $this->state->cause();
+        $cause = $this->cause();
 
         if ($cause instanceof TerminationCause) {
             if ($cause->isCancelled()) {
@@ -195,25 +187,30 @@ final readonly class Context
         }
     }
 
-    public function isTerminated(): bool
+    /**
+     * Why this context terminated, or `null` while it is active. Observes
+     * pending cancellation and the deadline like the other checks.
+     */
+    public function cause(): ?TerminationCause
     {
         $this->observe();
 
-        return $this->state->cause() instanceof \Rasuvaeff\Context\TerminationCause;
+        return $this->state->cause();
+    }
+
+    public function isTerminated(): bool
+    {
+        return $this->cause() instanceof TerminationCause;
     }
 
     public function isCancelled(): bool
     {
-        $this->observe();
-
-        return $this->state->cause()?->isCancelled() ?? false;
+        return $this->cause()?->isCancelled() ?? false;
     }
 
     public function isExpired(): bool
     {
-        $this->observe();
-
-        return $this->state->cause()?->isExpired() ?? false;
+        return $this->cause()?->isExpired() ?? false;
     }
 
     public function remainingMs(): ?float
@@ -232,6 +229,24 @@ final readonly class Context
         $milliseconds = floor($remainingNs / 1_000_000);
 
         return $milliseconds > 0 ? $milliseconds : 1.0;
+    }
+
+    /**
+     * The remaining budget in whole milliseconds, at least 1, or `null`
+     * without a deadline: what an adapter hands to a lower layer (a header,
+     * a statement timeout). The budget is read before the check, so a value
+     * returned is never the `0` of an expired context.
+     *
+     * @return positive-int|null
+     *
+     * @throws ContextException when the context is terminated
+     */
+    public function budgetMs(): ?int
+    {
+        $remainingMs = $this->remainingMs();
+        $this->assertActive();
+
+        return $remainingMs === null ? null : max(1, (int) $remainingMs);
     }
 
     public function deadlineNs(): ?int
@@ -253,8 +268,7 @@ final readonly class Context
 
         $this->assertActive();
         $nowNs = $this->timeSource->nowNs();
-        $durationNs = round(max(0.0, $seconds) * 1_000_000_000.0);
-        $endNs = $durationNs >= (float) (\PHP_INT_MAX - $nowNs) ? \PHP_INT_MAX : $nowNs + (int) $durationNs;
+        $endNs = $this->later($nowNs, $seconds);
         $targetNs = $this->deadlineNs === null ? $endNs : min($endNs, $this->deadlineNs);
 
         // A sleeper may return early: re-check the clock until the target.
@@ -288,10 +302,18 @@ final readonly class Context
         return $this->iterateChecked($items, $every);
     }
 
-    /** @param class-string $key */
+    /**
+     * @template T of object
+     *
+     * @param class-string<T> $key
+     *
+     * @psalm-return T|null
+     */
     public function value(string $key): ?object
     {
-        return $this->values[$key] ?? $this->parent?->value($key);
+        $value = $this->values[$key] ?? null;
+
+        return $value instanceof $key ? $value : null;
     }
 
     /**
@@ -370,6 +392,35 @@ final readonly class Context
         return [$this->deadlineNs, $this->deadlineOwner];
     }
 
+    /**
+     * `$fromNs` plus `$seconds` (a negative duration counts as zero),
+     * saturating at `PHP_INT_MAX` instead of overflowing.
+     */
+    private function later(int $fromNs, float $seconds): int
+    {
+        $durationNs = $this->nanoseconds($seconds);
+
+        return $durationNs >= (float) (\PHP_INT_MAX - $fromNs) ? \PHP_INT_MAX : $fromNs + (int) $durationNs;
+    }
+
+    /**
+     * round(), not (int): 1.015 * 1e9 is 1014999999.99…, and truncating made
+     * remainingMs() report 1014 right after asking for 1015.
+     */
+    private function nanoseconds(float $seconds): float
+    {
+        return round(max(0.0, $seconds) * 1_000_000_000.0);
+    }
+
+    /**
+     * The generics bind only callers that run psalm; this keeps the runtime
+     * guard for the rest, out of reach of psalm's "always true" verdict.
+     */
+    private function matchesKey(object $value, string $key): bool
+    {
+        return $value instanceof $key;
+    }
+
     private function sharesClockWith(self $other): bool
     {
         return $this->timeSource === $other->timeSource
@@ -396,7 +447,6 @@ final readonly class Context
 
         return new self(
             state: $state,
-            parent: $this,
             timeSource: $this->timeSource,
             sleeper: $this->sleeper,
             deadlineNs: $deadlineNs,

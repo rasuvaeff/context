@@ -134,6 +134,61 @@ final class WireCodecTest
         yield 'null' => [null];
     }
 
+    #[DataProvider('budgetFromWireProvider')]
+    public function budgetFromWireIsTheSingleBudgetRule(mixed $raw, ?int $expected): void
+    {
+        Assert::same(WireCodec::budgetFromWire($raw), $expected);
+    }
+
+    public static function budgetFromWireProvider(): iterable
+    {
+        yield 'int' => [750, 750];
+        yield 'digit string' => ['750', 750];
+        yield 'leading zeros' => ['007', 7];
+        yield 'smallest' => ['1', 1];
+        yield 'largest' => ['999999999', 999_999_999];
+        yield 'zero' => ['0', null];
+        yield 'zeros only' => ['000', null];
+        yield 'int zero' => [0, null];
+        yield 'int too large' => [1_000_000_000, null];
+        yield 'ten digits' => ['1000000000', null];
+        yield 'negative' => ['-5', null];
+        yield 'plus sign' => ['+5', null];
+        yield 'fraction' => ['1.5', null];
+        yield 'exponent' => ['1e3', null];
+        yield 'trailing newline' => ["750\n", null];
+        yield 'empty' => ['', null];
+        yield 'float' => [12.0, null];
+        yield 'null' => [null, null];
+    }
+
+    /**
+     * A string budget is accepted exactly when it is 1–9 digits that are not
+     * all zeros, and then it is its decimal value.
+     */
+    #[Property(runs: 300)]
+    public function aStringBudgetIsAcceptedExactlyWhenItIsNineDigitsAtMostAndNotZero(string $raw): void
+    {
+        $valid = preg_match('/^[0-9]{1,9}\z/', $raw) === 1 && (int) $raw > 0;
+
+        Assert::same(WireCodec::budgetFromWire($raw), $valid ? (int) $raw : null);
+
+        Classify::cover($valid, 'accepted', 20);
+        Classify::cover(!$valid, 'rejected', 20);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function aStringBudgetIsAcceptedExactlyWhenItIsNineDigitsAtMostAndNotZeroGenerators(): array
+    {
+        return [
+            'raw' => Gen::frequency([
+                [3, Gen::regex('[0-9]{1,9}')],
+                [1, Gen::regex('[0-9]{10,12}')],
+                [1, Gen::stringFrom('0123456789+-.e \n', 0, 6)],
+            ]),
+        ];
+    }
+
     public function anInvalidValueIsDroppedAndReported(): void
     {
         $reported = [];
@@ -279,6 +334,99 @@ final class WireCodecTest
                     'values' => Gen::dictOf(Gen::elements(['tenant', 'locale', 'other']), $scalar),
                 ])],
             ]),
+        ];
+    }
+
+    public function encodeValuesCarriesOnlyTheAllowListedValues(): void
+    {
+        $context = Context::background()
+            ->withValue(TenantId::class, new TenantId('acme'))
+            ->withValue(RequestId::class, new RequestId('not-on-the-wire'));
+
+        Assert::same($this->codec()->encodeValues($context), ['tenant' => 'acme']);
+    }
+
+    public function encodeValuesReadsATerminatedContext(): void
+    {
+        [$context, $controller] = Context::background()->withCancel();
+        $context = $context->withValue(TenantId::class, new TenantId('acme'));
+        $controller->cancel();
+
+        Assert::same($this->codec()->encodeValues($context), ['tenant' => 'acme']);
+    }
+
+    public function decodeValuesKeepsTheDeadlineAndTheCancellationOfTheContext(): void
+    {
+        $clock = new FakeTimeSource();
+        [$parent, $controller] = Context::background($clock)->withTimeout(2.0);
+
+        $context = $this->codec()->decodeValues(['tenant' => 'acme', 'locale' => 'de', 'other' => 'x'], $parent);
+
+        Assert::same($context->value(TenantId::class)?->value, 'acme');
+        Assert::same($context->value(Locale::class)?->value, 'de');
+        Assert::same($context->deadlineNs(), $parent->deadlineNs());
+
+        $controller->cancel();
+
+        Assert::true($context->isCancelled());
+    }
+
+    public function decodeValuesDropsAnInvalidValueAndReportsIt(): void
+    {
+        $reported = [];
+        $codec = new WireCodec(
+            ['tenant' => TenantId::class, 'locale' => Locale::class],
+            static function (string $alias) use (&$reported): void {
+                $reported[] = $alias;
+            },
+        );
+
+        $context = $codec->decodeValues(['tenant' => 'NOT VALID', 'locale' => 'de'], Context::background());
+
+        Assert::null($context->value(TenantId::class));
+        Assert::same($context->value(Locale::class)?->value, 'de');
+        Assert::same($reported, ['tenant']);
+    }
+
+    #[DataProvider('malformedValuesProvider')]
+    public function decodeValuesReturnsTheContextUnchangedOnMalformedInput(mixed $values): void
+    {
+        $parent = Context::background();
+
+        Assert::same($this->codec()->decodeValues($values, $parent), $parent);
+    }
+
+    public static function malformedValuesProvider(): iterable
+    {
+        yield 'null' => [null];
+        yield 'string' => ['tenant=acme'];
+        yield 'non-string entries' => [['tenant' => 42, 'locale' => ['de']]];
+        yield 'unknown aliases' => [['other' => 'x']];
+    }
+
+    #[Property(runs: 200)]
+    public function valuesRoundTripWithoutTheBudget(string $tenant, ?string $locale): void
+    {
+        $source = Context::background()->withValue(TenantId::class, new TenantId($tenant));
+        if ($locale !== null) {
+            $source = $source->withValue(Locale::class, new Locale($locale));
+        }
+
+        $decoded = $this->codec()->decodeValues($this->codec()->encodeValues($source), Context::background());
+
+        Assert::same($decoded->value(TenantId::class)?->value, $tenant);
+        Assert::same($decoded->value(Locale::class)?->value, $locale);
+        Assert::null($decoded->deadlineNs());
+
+        Classify::cover($locale === null, 'without a locale', 10);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function valuesRoundTripWithoutTheBudgetGenerators(): array
+    {
+        return [
+            'tenant' => Gen::regex('[a-z0-9-]{1,32}'),
+            'locale' => Gen::nullable(Gen::regex('[a-z]{2}')),
         ];
     }
 

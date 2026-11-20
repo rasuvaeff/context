@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 — 2026-11-20
+
+- Added: `Context::budgetMs(): ?int` — the remaining budget in whole
+  milliseconds (at least 1), read before the active check; throws on a
+  terminated context. `WireCodec::encode()` uses it (#25).
+- Added: `Context::cause(): ?TerminationCause` reads why a context ended
+  without catching an exception; it observes pending cancellation and the
+  deadline like the other checks (#26).
+- Added: `WireCodec::encodeValues()` and `decodeValues()` carry only the
+  allow-listed values, for transports that send the deadline on their own;
+  `encode()`/`decode()` are built on them (#29).
+- Added: static `WireCodec::budgetFromWire()` — the single rule for an
+  incoming budget, shared by `decode()` and adapters such as `context-http`'s
+  budget header (refs rasuvaeff/context-http#17). Accepted input is unchanged.
+- Added: generics on `Context::withValue()` and `value()` —
+  `class-string<T>` key, `T` value, `T|null` result; a psalm type fixture
+  pins it (#24).
+- Changed: the dead parent link of `Context` and its fallback in `value()` are
+  removed; derived contexts no longer keep their ancestors' `Context` objects
+  alive (#23).
+- Fixed: a state collected with an unobserved `requestCancel()` now gives the
+  process-wide pending counter back, so later checks in a long-running worker
+  skip the ancestor walk again; the seconds-to-nanoseconds conversion is a
+  single private helper (#28).
+
 ## 0.4.0 — 2026-11-20
 
 - Added: `ListenerFailuresException` (`RuntimeException`) with `errors()`: when

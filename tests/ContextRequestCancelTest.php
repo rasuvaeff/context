@@ -181,6 +181,24 @@ final class ContextRequestCancelTest
         Assert::true($second->isCancelled());
     }
 
+    public function anUnobservedRequestIsReleasedWhenItsStateIsCollected(): void
+    {
+        // Collect what earlier tests left behind first, so the measured
+        // collection releases only this test's request.
+        gc_collect_cycles();
+        $before = $this->pendingRequests();
+        [$parent] = Context::background()->withCancel();
+        [, $controller] = $parent->withCancel();
+        $controller->requestCancel();
+
+        Assert::same($this->pendingRequests(), $before + 1);
+
+        unset($parent, $controller);
+        gc_collect_cycles();
+
+        Assert::same($this->pendingRequests(), $before);
+    }
+
     public function aRequestReachesAJoinedContextThroughEitherParent(): void
     {
         [$worker, $workerController] = Context::background()->withCancel();

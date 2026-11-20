@@ -86,7 +86,7 @@ $root = Context::background();                       // сам по себе н�
 [$capped] = $request->withDeadline($absoluteNs);            // монотонные наносекунды hrtime()
 
 $traced = $request->withValue(RequestId::class, new RequestId('r-42'));
-$traced->value(RequestId::class)?->value;                    // 'r-42' (выигрывает ближайший предок)
+$traced->value(RequestId::class)?->value;                    // 'r-42' (выигрывает ближайший предок; psalm выводит ?RequestId)
 
 [$work] = $request->withReserve(0.2);                        // дедлайн родителя минус 200 мс
 $cleanup = $request->withoutCancel();                        // только значения: переживает запрос
@@ -120,7 +120,14 @@ $request->isTerminated();        // отменён или истёк
 $request->isCancelled();         // явная отмена
 $request->isExpired();           // дедлайн прошёл
 $request->remainingMs();         // null без дедлайна; >= 1.0 пока активен, 0.0 после истечения
+$request->budgetMs();            // null без дедлайна; int >= 1, бросает после завершения
+$request->cause();               // null пока активен; TerminationCause после завершения
 ```
+
+`budgetMs()` — то, что адаптер передаёт нижнему слою: читает остаток, затем
+вызывает `assertActive()` и возвращает целые миллисекунды, не меньше 1.
+`cause()` сообщает, почему контекст завершился, без перехвата исключения; как
+и другие проверки, он применяет запрошенную отмену и замечает дедлайн.
 
 **Отменённый** контекст с дедлайном продолжает сообщать бюджет:
 `remainingMs()` — реальный остаток до дедлайна и `1.0` после него
@@ -130,7 +137,7 @@ $request->remainingMs();         // null без дедлайна; >= 1.0 пок�
 
 Дедлайны считаются по монотонному `hrtime()` и обнаруживаются лениво:
 истёкший дедлайн замечает следующий вызов `assertActive()`, `remainingMs()`,
-`isTerminated()` или `isExpired()`. Если дедлайн принадлежит предку,
+`budgetMs()`, `cause()`, `isTerminated()` или `isExpired()`. Если дедлайн принадлежит предку,
 завершаются предок и всё его поддерево. Отмена через контроллер сразу
 распространяется на всех потомков. Одна проверка стоит около 0,2 мкс.
 
@@ -243,7 +250,19 @@ $message->attributes = $codec->encode($context);    // ['budget_ms' => 790, 'val
 [$context, $controller] = $codec->decode($message->attributes, Context::background(), maxBudgetMs: 30_000);
 ```
 
-`decode()` считает вход недоверенным и никогда на нём не бросает: бюджет
+Когда транспорт передаёт дедлайн сам (HTTP-заголовок с таймаутом),
+отправляйте и читайте только значения:
+
+```php
+$baggage = $codec->encodeValues($context);          // ['tenant' => 'acme'], контекст не проверяется
+$context = $codec->decodeValues($baggage, $context); // тот же дедлайн и отмена, без нового контроллера
+```
+
+`WireCodec::budgetFromWire($raw)` — единственное правило для входящего бюджета
+(им пользуются `decode()` и заголовок бюджета в `context-http`): int или 1–9
+цифр, ведущие нули допустимы, значение 1–999999999; всё остальное — `null`.
+
+`decode()` и `decodeValues()` считают вход недоверенным и никогда на нём не бросают: бюджет
 ограничен `maxBudgetMs` и родителем, отсутствующий или некорректный бюджет
 заменяется на `maxBudgetMs` (плохой вход никогда не снимает лимит),
 неизвестные алиасы отбрасываются, значение, чей `fromWire()` бросил,
@@ -272,11 +291,11 @@ $racy = new SteppingTimeSource(600_000_000);  // +0,6 с на каждое чт�
 
 ### Как писать адаптер
 
-- **Читайте `remainingMs()` до `assertActive()`.** Если читать после проверки,
-  дедлайн, прошедший между ними, даёт `0.0` — а `0` для curl, для
-  `max_execution_time` в ClickHouse и для `MAX_EXECUTION_TIME` в MySQL
-  означает *без таймаута*. Если читать до, прошедшая проверка гарантирует
-  минимум 1 мс.
+- **Используйте `budgetMs()`** или читайте `remainingMs()` до `assertActive()`.
+  Если читать после проверки, дедлайн, прошедший между ними, даёт `0.0` — а
+  `0` для curl, для `max_execution_time` в ClickHouse и для
+  `MAX_EXECUTION_TIME` в MySQL означает *без таймаута*. Если читать до,
+  прошедшая проверка гарантирует минимум 1 мс; `budgetMs()` делает ровно это.
 - Ошибку таймаута транспорта превращайте в `ContextExpiredException` с
   исходной в `previous`, если к этому моменту контекст истёк; иначе
   пробрасывайте как есть (таймаут, выставленный не вами).
@@ -286,13 +305,13 @@ $racy = new SteppingTimeSource(600_000_000);  // +0,6 с на каждое чт�
 
 | Класс | Описание |
 |---|---|
-| `Context` | Неизменяемое представление: `background(?TimeSource, ?Sleeper)`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withReserve()`, `withoutCancel()`, `joinedWith()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `remainingMs()`, `deadlineNs()`, `sleep()`, `iterate()`, `onTerminate()` |
+| `Context` | Неизменяемое представление: `background(?TimeSource, ?Sleeper)`, `withCancel()`, `withTimeout()`, `withDeadline()`, `withReserve()`, `withoutCancel()`, `joinedWith()`, `withValue()`, `value()`, `assertActive()`, `is*()`, `cause()`, `remainingMs()`, `budgetMs()`, `deadlineNs()`, `sleep()`, `iterate()`, `onTerminate()` |
 | `ContextController` | Владелец ветки: `cancel(?Throwable $reason = null)`, `requestCancel(?Throwable $reason = null)` |
 | `TimeSource` | Шов монотонных часов (`nowNs(): int`) для детерминированных тестов |
 | `HrTimeSource` | Продакшен-реализация на `hrtime()` |
 | `Sleeper` | Шов сна (`sleepNs(int)`) за `sleep()`; может вернуться раньше |
 | `UsleepSleeper` | Продакшен-реализация на `usleep()` |
-| `WireCodec` | Бюджет и разрешённые значения через границу процесса: `encode()`, `decode()` |
+| `WireCodec` | Бюджет и разрешённые значения через границу процесса: `encode()`, `decode()`, `encodeValues()`, `decodeValues()`, статический `budgetFromWire()` |
 | `WireValue` | Значение, которое может пересечь границу: `toWire()`, `fromWire()` |
 | `Testing\FakeTimeSource` | Детерминированные часы и sleeper: `advanceNs()`, `advanceMs()` |
 | `Testing\SteppingTimeSource` | Часы, сдвигающиеся на каждом чтении, для тестов гонок |
