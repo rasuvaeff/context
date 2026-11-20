@@ -202,6 +202,18 @@ final class WireCodecTest
         Assert::same($decoded->value(Locale::class)?->value, 'en');
     }
 
+    public function aNumericAliasSurvivesAJsonRoundTrip(): void
+    {
+        $codec = new WireCodec(['0' => TenantId::class]);
+        [$context] = Context::background(new FakeTimeSource())->withTimeout(1.0);
+        $wire = $codec->encode($context->withValue(TenantId::class, new TenantId('acme')));
+
+        $json = json_decode(json_encode($wire, \JSON_THROW_ON_ERROR), associative: true, flags: \JSON_THROW_ON_ERROR);
+        [$decoded] = $codec->decode($json, Context::background(new FakeTimeSource()), 1_000);
+
+        Assert::same($decoded->value(TenantId::class)?->value, 'acme');
+    }
+
     public function aClassThatIsNotAWireValueIsRejected(): void
     {
         Expect::exception(\InvalidArgumentException::class);

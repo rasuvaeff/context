@@ -57,7 +57,7 @@ new ContextExpiredException(int $deadlineNs, ?\Throwable $previous = null);
 
 Listener failures do not stop the cascade: every listener and child runs, then
 one exception is rethrown as is, or several as `ListenerFailuresException`
-(extends `RuntimeException`; `errors(): non-empty-list<\Throwable>` in order,
+(extends `RuntimeException`; `errors(): list<\Throwable>`, never empty, in order,
 `previous` chain ends with the last), from `cancel()` / the observing call.
 
 Queue recipe: one context per message with the TTR as timeout, `assertActive()`

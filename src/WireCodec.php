@@ -28,7 +28,10 @@ final readonly class WireCodec
 
     /**
      * @param array<array-key, class-string> $aliases alias => value class; a
-     *        numeric alias (`'1'`) arrives as an int key and is accepted
+     *        numeric alias (`'1'`) arrives as an int key and is accepted. It
+     *        stays an int key in `encode()`'s `values`, so `json_encode()`
+     *        turns aliases `0..n` into a JSON list; `decode()` still reads it,
+     *        but prefer non-numeric aliases when non-PHP code reads the wire
      * @param (callable(string, \Throwable): void)|null $onInvalid receives the
      *        alias and the error of a dropped incoming value
      */

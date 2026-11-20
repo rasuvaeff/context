@@ -21,6 +21,7 @@ use Rasuvaeff\PropertyTesting\Property;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
+use Testo\Expect;
 use Testo\Test;
 
 #[Test]
@@ -147,6 +148,12 @@ final class ContextLifecycleTest
         }
 
         throw new \LogicException('an aggregated failure was expected');
+    }
+
+    public function anEmptyFailureListIsRejected(): void
+    {
+        Expect::exception(\InvalidArgumentException::class);
+        new ListenerFailuresException([]);
     }
 
     public function aSingleFailingListenerIsRethrownAsIs(): void

@@ -15,10 +15,16 @@ namespace Rasuvaeff\Context;
 final class ListenerFailuresException extends \RuntimeException
 {
     /**
-     * @param non-empty-list<\Throwable> $errors
+     * @param list<\Throwable> $errors at least one
+     *
+     * @throws \InvalidArgumentException on an empty list
      */
     public function __construct(private readonly array $errors)
     {
+        if ($this->errors === []) {
+            throw new \InvalidArgumentException('At least one listener failure is required');
+        }
+
         $chain = $this->errors[\count($this->errors) - 1];
         for ($i = \count($this->errors) - 1; $i > 0; --$i) {
             $chain = new \RuntimeException('Context termination listener failed', previous: $chain);
@@ -28,7 +34,7 @@ final class ListenerFailuresException extends \RuntimeException
     }
 
     /**
-     * @return non-empty-list<\Throwable>
+     * @return list<\Throwable> never empty
      */
     public function errors(): array
     {
