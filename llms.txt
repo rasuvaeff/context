@@ -43,7 +43,8 @@ $traced->value(RequestId::class);                   // ?RequestId
 
 $ctx->assertActive();      // ContextCancelledException (reason = previous) | ContextExpiredException
 $ctx->isTerminated();      // isCancelled() || isExpired()
-$ctx->remainingMs();       // ?float: null = no deadline, >= 1.0 active, 0.0 expired
+$ctx->remainingMs();       // ?float: null = no deadline, >= 1.0 active, 0.0 expired;
+                           // cancelled + deadline: real remainder, then 1.0 (never 0.0)
 $ctx->deadlineNs();        // ?int
 
 $unsubscribe = $ctx->onTerminate(static fn (TerminationCause $c): null => null);
@@ -55,8 +56,9 @@ new ContextExpiredException(int $deadlineNs, ?\Throwable $previous = null);
 ```
 
 Listener failures do not stop the cascade: every listener and child runs, then
-one exception (or a `RuntimeException` chain for several) is rethrown from
-`cancel()` / the observing call.
+one exception is rethrown as is, or several as `ListenerFailuresException`
+(extends `RuntimeException`; `errors(): non-empty-list<\Throwable>` in order,
+`previous` chain ends with the last), from `cancel()` / the observing call.
 
 Queue recipe: one context per message with the TTR as timeout, `assertActive()`
 before every step, ACK only after completion, NACK/dead-letter on
@@ -66,6 +68,13 @@ Testing: `Rasuvaeff\Context\Testing\FakeTimeSource` (`advanceNs()`,
 `advanceMs()`; also the `Sleeper`, so `sleep()` advances it) and
 `SteppingTimeSource($stepNs)` (moves on every read — race tests). Pass to
 `Context::background($clock)`.
+
+Production seams: `HrTimeSource` (`TimeSource`, `hrtime()`) and `UsleepSleeper`
+(`Sleeper`, `usleep()`) are the defaults of `Context::background()`.
+
+Adapters: `rasuvaeff/context-http` (PSR-15/PSR-18), `rasuvaeff/context-cli`
+(signals), `rasuvaeff/context-db` (MySQL/MariaDB/PostgreSQL statement timeouts),
+`rasuvaeff/context-process` (subprocesses).
 
 ## 0.3.0 additions
 
@@ -89,7 +98,7 @@ final readonly class TenantId implements WireValue {
     public function toWire(): string;                     // what travels
     public static function fromWire(string $w): static;   // validate, throw on bad input
 }
-$codec = new WireCodec(['tenant' => TenantId::class], onInvalid: null);
+$codec = new WireCodec(['tenant' => TenantId::class], onInvalid: null);  // aliases /^[A-Za-z0-9_.-]{1,64}\z/; numeric ones work
 $wire = $codec->encode($ctx);       // ['budget_ms' => int|null, 'values' => ['tenant' => '...']]; throws if terminated
 [$ctx, $c] = $codec->decode($wire, Context::background(), maxBudgetMs: 30_000);
 // decode never throws on input: missing/bad budget → maxBudgetMs (never unlimited),

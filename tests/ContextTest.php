@@ -186,6 +186,21 @@ final class ContextTest
         Assert::false($parent->isTerminated());
     }
 
+    public function aCancelledContextReportsItsRemainingBudgetUntilTheDeadline(): void
+    {
+        $clock = new FakeTimeSource();
+        [$context, $controller] = Context::background($clock)->withTimeout(1.0);
+        $clock->advanceMs(250);
+        $controller->cancel();
+
+        Assert::same($context->remainingMs(), 750.0);
+
+        $clock->advanceMs(1_000);
+
+        Assert::same($context->remainingMs(), 1.0);
+        Assert::false($context->isExpired());
+    }
+
     public function cancellationReasonIsPrevious(): void
     {
         [$context, $controller] = Context::background()->withCancel();

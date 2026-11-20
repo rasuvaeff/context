@@ -184,6 +184,24 @@ final class WireCodecTest
         yield 'baggage separator' => ['tenant,x'];
     }
 
+    public function aNumericAliasIsAcceptedAndRoundTrips(): void
+    {
+        $codec = new WireCodec(['1' => TenantId::class, '0' => Locale::class]);
+        [$context] = Context::background(new FakeTimeSource())->withTimeout(1.0);
+        $context = $context
+            ->withValue(TenantId::class, new TenantId('acme'))
+            ->withValue(Locale::class, new Locale('en'));
+
+        $wire = $codec->encode($context);
+
+        Assert::same($wire['values'], [1 => 'acme', 0 => 'en']);
+
+        [$decoded] = $codec->decode($wire, Context::background(new FakeTimeSource()), 1_000);
+
+        Assert::same($decoded->value(TenantId::class)?->value, 'acme');
+        Assert::same($decoded->value(Locale::class)?->value, 'en');
+    }
+
     public function aClassThatIsNotAWireValueIsRejected(): void
     {
         Expect::exception(\InvalidArgumentException::class);
