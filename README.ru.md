@@ -26,6 +26,15 @@
 composer require rasuvaeff/context
 ```
 
+Адаптеры, каждый — отдельный пакет:
+
+| Пакет | Что делает |
+|---|---|
+| [`rasuvaeff/context-http`](https://github.com/rasuvaeff/context-http) | PSR-15 middleware и PSR-18 клиент: бюджет и значения через HTTP |
+| [`rasuvaeff/context-cli`](https://github.com/rasuvaeff/context-cli) | Сигналы ОС отменяют контекст CLI-воркера; принудительный выход на втором сигнале |
+| [`rasuvaeff/context-db`](https://github.com/rasuvaeff/context-db) | Серверные таймауты запросов для MySQL, MariaDB и PostgreSQL через PDO |
+| [`rasuvaeff/context-process`](https://github.com/rasuvaeff/context-process) | Внешние процессы в рамках бюджета: SIGTERM, затем SIGKILL |
+
 ## Ограничения
 
 Контекст **останавливает работу, а не прерывает её.** Он гарантирует две
@@ -41,7 +50,8 @@ composer require rasuvaeff/context
 | HTTP через Guzzle | Per-request `timeout` = остаток бюджета ([`rasuvaeff/context-http`](https://github.com/rasuvaeff/context-http)) | Нет для синхронного вызова — он вернётся по собственному таймауту |
 | HTTP через произвольный PSR-18 клиент | Нет: у PSR-18 нет per-request опций — настройте клиент | Нет |
 | ClickHouse по HTTP | `max_execution_time` ([`rasuvaeff/clickhouse-toolkit`](https://github.com/rasuvaeff/clickhouse-toolkit)) | Сервер сам соблюдает `max_execution_time` |
-| MySQL / PostgreSQL через PDO | Нет: у PDO нет таймаута на запрос (только на подключение) | Только вне основного соединения (`KILL QUERY`, `pg_cancel_backend()`) — не реализовано |
+| MySQL / MariaDB / PostgreSQL через PDO | Серверный таймаут запроса ([`rasuvaeff/context-db`](https://github.com/rasuvaeff/context-db)); у самого PDO его нет | Сервер останавливает запрос по своему таймауту; `KILL QUERY` / `pg_cancel_backend()` вне соединения не реализованы |
+| Внешние процессы | Таймаут процесса = остаток бюджета ([`rasuvaeff/context-process`](https://github.com/rasuvaeff/context-process)) | Да: SIGTERM, затем SIGKILL |
 | Redis | Только уменьшением read timeout клиента | Нет для блокирующих команд (`BLPOP`) |
 
 Дедлайны **ленивые**: фонового таймера нет. Истёкший дедлайн обнаруживает
@@ -112,6 +122,12 @@ $request->isExpired();           // дедлайн прошёл
 $request->remainingMs();         // null без дедлайна; >= 1.0 пока активен, 0.0 после истечения
 ```
 
+**Отменённый** контекст с дедлайном продолжает сообщать бюджет:
+`remainingMs()` — реальный остаток до дедлайна и `1.0` после него
+(отменённый контекст никогда не наблюдается истёкшим). Можно ли продолжать
+работу, проверяйте через `isTerminated()` или `assertActive()`, а не через
+`remainingMs()`.
+
 Дедлайны считаются по монотонному `hrtime()` и обнаруживаются лениво:
 истёкший дедлайн замечает следующий вызов `assertActive()`, `remainingMs()`,
 `isTerminated()` или `isExpired()`. Если дедлайн принадлежит предку,
@@ -152,7 +168,10 @@ $requestController->cancel($reason);   // $reason станет previous у ис�
 
 Бросающий слушатель не останавливает остальных и каскад; его исключение
 пробрасывается после каскада — из `cancel()` или из проверки, обнаружившей
-завершение.
+завершение. Одна ошибка пробрасывается как есть; несколько превращаются в
+`ListenerFailuresException` (`RuntimeException`), у которого `errors()`
+перечисляет все ошибки по порядку — потомок, чей каскад упал, добавляет
+брошенное им исключение.
 
 **Из обработчика сигнала никогда не вызывайте `cancel()`** — он запустит
 слушателей в произвольной точке прерванного кода. `requestCancel()` только
@@ -279,6 +298,7 @@ $racy = new SteppingTimeSource(600_000_000);  // +0,6 с на каждое чт�
 | `Testing\SteppingTimeSource` | Часы, сдвигающиеся на каждом чтении, для тестов гонок |
 | `TerminationCause` | Причина завершения (отмена или дедлайн), передаётся слушателям |
 | `ContextException` | Базовое исключение контекста (`RuntimeException`) |
+| `ListenerFailuresException` | Упали несколько слушателей завершения: `errors()` перечисляет их (`RuntimeException`) |
 | `ContextCancelledException` | Явная отмена, обнаруженная `assertActive()`; причина — `previous` |
 | `ContextExpiredException` | Истёкший дедлайн, обнаруженный `assertActive()`; `deadlineNs()`, необязательный `previous` |
 
@@ -302,6 +322,7 @@ $racy = new SteppingTimeSource(600_000_000);  // +0,6 с на каждое чт�
 | Скрипт | Что показывает | Нужен сервер? |
 |---|---|---|
 | `basic.php` | Производные контексты, значения в рамках запроса и отмена | нет |
+| `derivations.php` | `withReserve()`, `iterate()`, `sleep()`, `joinedWith()` с `requestCancel()`, `withoutCancel()`, `WireCodec` — на фейковых часах | нет |
 
 ## Разработка
 

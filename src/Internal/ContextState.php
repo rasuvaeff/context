@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Context\Internal;
 
+use Rasuvaeff\Context\ListenerFailuresException;
 use Rasuvaeff\Context\TerminationCause;
 
 /**
@@ -191,17 +192,6 @@ final class ContextState
             return $errors[0];
         }
 
-        $chain = array_pop($errors);
-        foreach (array_reverse($errors) as $error) {
-            $chain = new \RuntimeException(
-                'Context termination listener failed',
-                previous: $chain,
-            );
-        }
-
-        return new \RuntimeException(
-            'One or more context termination listeners failed',
-            previous: $chain,
-        );
+        return new ListenerFailuresException($errors);
     }
 }

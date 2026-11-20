@@ -24,6 +24,15 @@ Deadline, cancellation and request-scoped values for PHP
 composer require rasuvaeff/context
 ```
 
+Adapters, each a separate package:
+
+| Package | Does |
+|---|---|
+| [`rasuvaeff/context-http`](https://github.com/rasuvaeff/context-http) | PSR-15 middleware and PSR-18 client: budget and values across HTTP |
+| [`rasuvaeff/context-cli`](https://github.com/rasuvaeff/context-cli) | OS signals cancel a CLI worker's context; forced exit on the second signal |
+| [`rasuvaeff/context-db`](https://github.com/rasuvaeff/context-db) | Server-side statement timeouts for MySQL, MariaDB and PostgreSQL over PDO |
+| [`rasuvaeff/context-process`](https://github.com/rasuvaeff/context-process) | External processes under the budget: SIGTERM, then SIGKILL |
+
 ## Limitations
 
 The context **stops work; it does not interrupt it.** It guarantees two
@@ -39,7 +48,8 @@ is possible only where the transport supports it:
 | HTTP via Guzzle | Per-request `timeout` = remaining budget ([`rasuvaeff/context-http`](https://github.com/rasuvaeff/context-http)) | No for a synchronous call — it returns at its own timeout |
 | HTTP via a generic PSR-18 client | No: PSR-18 has no per-request options — configure the client | No |
 | ClickHouse over HTTP | `max_execution_time` ([`rasuvaeff/clickhouse-toolkit`](https://github.com/rasuvaeff/clickhouse-toolkit)) | The server enforces `max_execution_time` |
-| MySQL / PostgreSQL via PDO | No: PDO has no per-query timeout (connect only) | Only out of band (`KILL QUERY`, `pg_cancel_backend()`) — not provided |
+| MySQL / MariaDB / PostgreSQL via PDO | Server-side statement timeout ([`rasuvaeff/context-db`](https://github.com/rasuvaeff/context-db)); PDO itself has none | The server stops the statement when its timeout fires; out-of-band `KILL QUERY` / `pg_cancel_backend()` is not provided |
+| External processes | Process timeout = remaining budget ([`rasuvaeff/context-process`](https://github.com/rasuvaeff/context-process)) | Yes: SIGTERM, then SIGKILL |
 | Redis | Only by lowering the client's read timeout | No for blocking commands (`BLPOP`) |
 
 Deadlines are **lazy**: there is no background timer. An expired deadline is
@@ -108,6 +118,11 @@ $request->isExpired();           // deadline passed
 $request->remainingMs();         // null without a deadline; >= 1.0 while active, 0.0 once expired
 ```
 
+A **cancelled** context with a deadline keeps reporting its budget:
+`remainingMs()` is the real remainder before the deadline and `1.0` after it
+(a cancelled context is never observed as expired). Check `isTerminated()`
+or `assertActive()`, not `remainingMs()`, to see whether work may continue.
+
 Deadlines use monotonic `hrtime()` and are observed lazily: the next
 `assertActive()`, `remainingMs()`, `isTerminated()` or `isExpired()` call
 discovers an expired deadline. If the deadline belongs to an ancestor, the
@@ -148,7 +163,10 @@ the controller you own in `finally`.
 
 A listener that throws does not stop the others or the cascade; its exception
 is rethrown after the cascade, from `cancel()` or from the check that
-discovered the termination.
+discovered the termination. One failure is rethrown as is; several become a
+`ListenerFailuresException` (a `RuntimeException`) whose `errors()` lists
+every failure in order — a descendant whose cascade failed contributes the
+exception it threw.
 
 **From a signal handler, never call `cancel()`** — it would run listeners at
 an arbitrary point of the interrupted code. `requestCancel()` only records the
@@ -270,6 +288,7 @@ call — the way to prove an adapter never acts on an expired budget.
 | `Testing\SteppingTimeSource` | A clock that moves on every read, for race tests |
 | `TerminationCause` | Cancellation or deadline cause passed to listeners |
 | `ContextException` | Base context exception (`RuntimeException`) |
+| `ListenerFailuresException` | Several termination listeners failed: `errors()` lists them (`RuntimeException`) |
 | `ContextCancelledException` | Explicit cancellation detected by `assertActive()`; the reason is `previous` |
 | `ContextExpiredException` | Deadline expiration detected by `assertActive()`; `deadlineNs()`, optional `previous` |
 
@@ -294,6 +313,7 @@ documented public API.
 | Script | Shows | Needs server? |
 |---|---|---|
 | `basic.php` | Derivation, request-scoped values and cancellation | no |
+| `derivations.php` | `withReserve()`, `iterate()`, `sleep()`, `joinedWith()` with `requestCancel()`, `withoutCancel()`, `WireCodec` — on a fake clock | no |
 
 ## Development
 

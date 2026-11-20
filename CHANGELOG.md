@@ -5,8 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.4.0 — 2026-11-20
 
+- Added: `ListenerFailuresException` (`RuntimeException`) with `errors()`: when
+  several termination listeners fail, every original exception is now
+  reachable, not only the last. Message and `previous` chain are unchanged (#21).
+- Fixed: `WireCodec` threw `TypeError` on a numeric alias (`'1'` becomes an int
+  array key); numeric aliases are now accepted and round-trip (#22).
+- Docs: `remainingMs()` of a cancelled context (the real remainder before the
+  deadline, `1.0` after it) is documented and pinned by a test (#27).
+- Docs: README lists `context-http`, `context-cli`, `context-db` and
+  `context-process`, the database row no longer says support is missing, the
+  examples table lists `derivations.php`; `llms.txt` mentions `UsleepSleeper`.
+  `infection/infection` raised to `^0.35` (#30).
 - Mutation testing now counts code the tests execute without naming it in `#[Covers]`
   (`infection --with-uncovered`), with `PublicVisibility` off and default-parameter
   signature lines ignored; tests added for value/key mismatch, default check

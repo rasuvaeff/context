@@ -20,21 +20,26 @@ final readonly class WireCodec
 
     private const int MAX_BUDGET_MS = 999_999_999;
 
-    /** @var array<string, class-string<WireValue>> */
+    /** @var list<array{string, class-string<WireValue>}> alias, value class */
     private array $aliases;
 
     /** @var (\Closure(string, \Throwable): void)|null */
     private ?\Closure $onInvalid;
 
     /**
-     * @param array<string, class-string> $aliases alias => value class
+     * @param array<array-key, class-string> $aliases alias => value class; a
+     *        numeric alias (`'1'`) arrives as an int key and is accepted. It
+     *        stays an int key in `encode()`'s `values`, so `json_encode()`
+     *        turns aliases `0..n` into a JSON list; `decode()` still reads it,
+     *        but prefer non-numeric aliases when non-PHP code reads the wire
      * @param (callable(string, \Throwable): void)|null $onInvalid receives the
      *        alias and the error of a dropped incoming value
      */
     public function __construct(array $aliases, ?callable $onInvalid = null)
     {
         $checked = [];
-        foreach ($aliases as $alias => $class) {
+        foreach ($aliases as $key => $class) {
+            $alias = (string) $key;
             if (preg_match(self::ALIAS_PATTERN, $alias) !== 1) {
                 throw new \InvalidArgumentException(sprintf('Invalid wire alias "%s"', $alias));
             }
@@ -43,7 +48,7 @@ final readonly class WireCodec
                 throw new \InvalidArgumentException(sprintf('Wire value class "%s" must implement %s', $class, WireValue::class));
             }
 
-            $checked[$alias] = $class;
+            $checked[] = [$alias, $class];
         }
 
         $this->aliases = $checked;
@@ -63,7 +68,7 @@ final readonly class WireCodec
         $context->assertActive();
 
         $values = [];
-        foreach ($this->aliases as $alias => $class) {
+        foreach ($this->aliases as [$alias, $class]) {
             $value = $context->value($class);
             if ($value instanceof WireValue) {
                 $values[$alias] = $value->toWire();
@@ -95,7 +100,7 @@ final readonly class WireCodec
         [$context, $controller] = $parent->withTimeout((float) min($budgetMs ?? $maxBudgetMs, $maxBudgetMs) / 1000.0);
 
         $values = $this->map($wire['values'] ?? null);
-        foreach ($this->aliases as $alias => $class) {
+        foreach ($this->aliases as [$alias, $class]) {
             $raw = $values[$alias] ?? null;
             if (!\is_string($raw)) {
                 continue;

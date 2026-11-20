@@ -10,6 +10,7 @@ use Rasuvaeff\Context\ContextController;
 use Rasuvaeff\Context\ContextException;
 use Rasuvaeff\Context\ContextExpiredException;
 use Rasuvaeff\Context\Internal\ContextState;
+use Rasuvaeff\Context\ListenerFailuresException;
 use Rasuvaeff\Context\TerminationCause;
 use Rasuvaeff\Context\Testing\FakeTimeSource;
 use Rasuvaeff\Context\Tests\Support\RequestId;
@@ -20,6 +21,7 @@ use Rasuvaeff\PropertyTesting\Property;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
+use Testo\Expect;
 use Testo\Test;
 
 #[Test]
@@ -28,6 +30,7 @@ use Testo\Test;
 #[Covers(ContextState::class)]
 #[Covers(TerminationCause::class)]
 #[Covers(ContextExpiredException::class)]
+#[Covers(ListenerFailuresException::class)]
 #[Covers(ContextCancelledException::class)]
 final class ContextLifecycleTest
 {
@@ -135,6 +138,60 @@ final class ContextLifecycleTest
             $last = $first?->getPrevious();
             Assert::same($last?->getMessage(), 'third');
             Assert::null($last?->getPrevious());
+            Assert::instanceOf($error, ListenerFailuresException::class);
+            Assert::same(
+                array_map(static fn(\Throwable $e): string => $e->getMessage(), $error->errors()),
+                ['first', 'second', 'third'],
+            );
+
+            return;
+        }
+
+        throw new \LogicException('an aggregated failure was expected');
+    }
+
+    public function anEmptyFailureListIsRejected(): void
+    {
+        Expect::exception(\InvalidArgumentException::class);
+        new ListenerFailuresException([]);
+    }
+
+    public function aSingleFailingListenerIsRethrownAsIs(): void
+    {
+        [$context, $controller] = Context::background()->withCancel();
+        $failure = new \DomainException('only');
+        $context->onTerminate(static function () use ($failure): void {
+            throw $failure;
+        });
+
+        try {
+            $controller->cancel();
+        } catch (\DomainException $error) {
+            Assert::same($error, $failure);
+
+            return;
+        }
+
+        throw new \LogicException('the listener failure was expected');
+    }
+
+    public function aFailingDescendantCascadeIsOneOfTheErrors(): void
+    {
+        [$parent, $controller] = Context::background()->withCancel();
+        [$child] = $parent->withCancel();
+        $parentFailure = new \DomainException('parent');
+        $parent->onTerminate(static function () use ($parentFailure): void {
+            throw $parentFailure;
+        });
+        $childFailure = new \DomainException('child');
+        $child->onTerminate(static function () use ($childFailure): void {
+            throw $childFailure;
+        });
+
+        try {
+            $controller->cancel();
+        } catch (ListenerFailuresException $error) {
+            Assert::same($error->errors(), [$parentFailure, $childFailure]);
 
             return;
         }
