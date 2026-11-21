@@ -15,7 +15,7 @@ Deadline, cancellation and request-scoped values for PHP
 
 ## Requirements
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - No runtime dependencies
 
 ## Installation
