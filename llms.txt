@@ -8,7 +8,7 @@ composer require rasuvaeff/context
 
 ## Rules
 
-- PHP 8.3+, `declare(strict_types=1)`, no runtime dependencies.
+- PHP 8.3–8.6, `declare(strict_types=1)`, no runtime dependencies.
 - `Context` is an immutable read-only view; the owner of a branch keeps the
   `ContextController` and cancels it in `finally`.
 - Cancellation is cooperative: call `assertActive()` between steps; nothing
