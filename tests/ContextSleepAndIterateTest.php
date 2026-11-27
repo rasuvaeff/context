@@ -274,6 +274,35 @@ final class ContextSleepAndIterateTest
         }
     }
 
+    public function aTerminatedContextNeverOpensAnAggregateSource(): void
+    {
+        // IteratorIterator calls getIterator() while it is constructed: a
+        // source that opens a cursor or a file must not be opened at all.
+        $source = new class implements \IteratorAggregate {
+            public int $opened = 0;
+
+            #[\Override]
+            public function getIterator(): \Iterator
+            {
+                ++$this->opened;
+
+                return new \ArrayIterator([1]);
+            }
+        };
+        [$context, $controller] = Context::background()->withCancel();
+        $controller->cancel();
+
+        try {
+            iterator_to_array($context->iterate($source));
+        } catch (ContextCancelledException) {
+            Assert::same($source->opened, 0);
+
+            return;
+        }
+
+        throw new \LogicException('a cancellation was expected');
+    }
+
     public function anInvalidCheckIntervalIsRejectedBeforeIterating(): void
     {
         Expect::exception(\InvalidArgumentException::class);

@@ -342,9 +342,10 @@ final readonly class Context
      */
     private function iterateChecked(iterable $items, int $every): \Generator
     {
-        $iterator = \is_array($items) ? new \ArrayIterator($items) : new \IteratorIterator($items);
-
+        // Check first: IteratorIterator calls getIterator() of an
+        // IteratorAggregate while it is constructed, which may open the source.
         $this->assertActive();
+        $iterator = \is_array($items) ? new \ArrayIterator($items) : new \IteratorIterator($items);
         $iterator->rewind();
         $untilCheck = $every;
 

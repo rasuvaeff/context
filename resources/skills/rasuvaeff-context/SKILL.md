@@ -24,7 +24,8 @@ Go's `context.Context`. Namespace `Rasuvaeff\Context\`.
 2. **Nothing is interrupted — check between steps.** Call `assertActive()`
    before each retry attempt, batch item, queue step or external call. Loops:
    `foreach ($ctx->iterate($items) as $k => $v)` (checks before pulling each
-   element). Waits: `$ctx->sleep($s)`, never `usleep()`. A deadline is
+   element; a terminated context never calls `getIterator()` of an
+   `IteratorAggregate` source). Waits: `$ctx->sleep($s)`, never `usleep()`. A deadline is
    discovered lazily — an unobserved context never runs its listeners.
 
 3. **Adapters read the budget BEFORE `assertActive()`.**
