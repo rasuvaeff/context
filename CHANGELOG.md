@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getIterator()` of an `IteratorAggregate` source before throwing — wrapping
   it in `IteratorIterator` does that on construction — so a source that opens a
   cursor or a file was opened past the budget. The context is now checked
-  before the iterator is obtained (#37).
+  before the iterator is obtained, and again before `rewind()` pulls the first
+  element, so a context that terminates while the source opens does not let
+  that element through (#37).
 
 ## 0.5.2 — 2026-11-27
 

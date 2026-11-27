@@ -303,6 +303,38 @@ final class ContextSleepAndIterateTest
         throw new \LogicException('a cancellation was expected');
     }
 
+    public function aSourceThatTerminatesTheContextWhileOpeningIsNotPulled(): void
+    {
+        [$context, $controller] = Context::background()->withCancel();
+        $source = new class ($controller) implements \IteratorAggregate {
+            public int $pulled = 0;
+
+            public function __construct(private readonly ContextController $controller) {}
+
+            #[\Override]
+            public function getIterator(): \Generator
+            {
+                $this->controller->cancel();
+
+                return (function (): \Generator {
+                    ++$this->pulled;
+
+                    yield 1;
+                })();
+            }
+        };
+
+        try {
+            iterator_to_array($context->iterate($source));
+        } catch (ContextCancelledException) {
+            Assert::same($source->pulled, 0);
+
+            return;
+        }
+
+        throw new \LogicException('a cancellation was expected');
+    }
+
     public function anInvalidCheckIntervalIsRejectedBeforeIterating(): void
     {
         Expect::exception(\InvalidArgumentException::class);
