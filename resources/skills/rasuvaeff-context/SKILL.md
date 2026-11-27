@@ -73,7 +73,7 @@ Go's `context.Context`. Namespace `Rasuvaeff\Context\`.
 | Cancellable sub-branch | `[$branch, $c] = $ctx->withCancel()` |
 | Absolute monotonic deadline | `$ctx->withDeadline($ns)` (earlier of parent's and yours) |
 | Request metadata | `$ctx->withValue(TenantId::class, new TenantId('t'))` / `->value(TenantId::class)` |
-| Graceful CLI shutdown | `pcntl_signal(SIGTERM, fn () => $c->requestCancel(...))` (or `rasuvaeff/context-cli`) |
+| Graceful CLI shutdown | `pcntl_signal(SIGTERM, fn () => $c->requestCancel())` (or `rasuvaeff/context-cli`) |
 | Release a resource on termination | `$unsubscribe = $ctx->onTerminate(fn (TerminationCause $t) => ...)` |
 | Hand budget + values to another process | `WireCodec::encode()` / `decode()` |
 | HTTP (PSR-15/PSR-18/Guzzle) | `rasuvaeff/context-http` |
