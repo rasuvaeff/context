@@ -148,8 +148,9 @@ foreach ($request->iterate($rows) as $key => $row) {
 end of the sleep and `ContextCancelledException` when a signal handler
 requests cancellation meanwhile. `iterate()` keeps keys and checks the context
 **before pulling** the next element, so a generator source (a paginated query)
-is never advanced after the context terminates; pass `every: 100` for very
-cheap elements.
+is never advanced after the context terminates — and an `IteratorAggregate`
+source is not even opened (`getIterator()` is not called) when the context has
+already terminated; pass `every: 100` for very cheap elements.
 
 ### Cancel and clean up
 

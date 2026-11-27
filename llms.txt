@@ -84,7 +84,8 @@ $cleanup = $ctx->withoutCancel();          // values only: no deadline, not canc
 [$job, $c] = $message->joinedWith($worker);// terminated when either is; earlier deadline; values from $message
                                            // same TimeSource required (two default clocks are fine)
 $ctx->sleep(0.5);                          // min(0.5 s, remaining); throws Expired/Cancelled
-foreach ($ctx->iterate($items, every: 1) as $k => $v) {}   // checks before pulling each element
+foreach ($ctx->iterate($items, every: 1) as $k => $v) {}   // checks before pulling each element;
+                                                            // a terminated context never calls IteratorAggregate::getIterator()
 $controller->requestCancel($reason);       // signal-safe: applied at the next check of the subtree
 ```
 
