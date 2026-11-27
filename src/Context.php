@@ -349,7 +349,12 @@ final readonly class Context
         $untilCheck = $every;
 
         while ($iterator->valid()) {
-            yield $iterator->key() => $iterator->current();
+            /** @var TKey $key valid() is true, so key() is not the past-the-end null */
+            $key = $iterator->key();
+            /** @var TValue $value */
+            $value = $iterator->current();
+
+            yield $key => $value;
 
             if (--$untilCheck === 0) {
                 $this->assertActive();

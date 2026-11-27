@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.5.2 — 2026-11-27
 
 - Docs: the agent skill showed `fn () => $c->requestCancel(...)` for a SIGTERM handler — a first-class callable that cancels nothing; it is now `requestCancel()`.
+- Psalm 7.22: the private `iterateChecked()` generator narrows `Iterator::key()`/`current()` to its template types with inline `@var` (no behaviour change).
 
 ## 0.5.1 — 2026-11-21
 
